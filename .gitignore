@@ -127,3 +127,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Added for local development
+.python-exe/
+.project
+.settings/
+.pydevproject
+
