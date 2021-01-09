@@ -5,10 +5,24 @@ Common code for client and server code.
 """
 import copy
 import signal
+import logging
 import threading
 from functools import partial
 from tornado import ioloop, gen
-from logger import main_logger
+
+
+main_logger = logging.getLogger('wsproxy')
+
+
+def setup_default_logger():
+    main_logger.setLevel(logging.INFO)
+
+    stream_handler = logging.StreamHandler()
+    main_logger.addHandler(stream_handler)
+
+
+def get_child_logger(name):
+    return main_logger.getChild(name)
 
 
 def register_signal_handler(handler):
@@ -44,7 +58,7 @@ class IOLoopService(object):
     def add_ioloop_drain_hook(self, hook, *args, **kwargs):
         self.drain_hooks.append(partial(hook, *args, **kwargs))
 
-    def run_forever(self):
+    def run_ioloop(self):
         main_logger.info("Starting IOLoop.")
         self.ioloop.start()
         self.ioloop.close()

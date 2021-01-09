@@ -11,12 +11,11 @@ import traceback
 from tornado import (
     websocket, web, ioloop, iostream, httpserver, netutil, tcpserver
 )
-from context import JsonWsContext, WsServerConnection
-from common import IOLoopService
-from logger import get_child_logger, setup_default_logger
+from wsproxy.lib.context import JsonWsContext, WsServerConnection
+from wsproxy.lib import common
 
 
-logger = get_child_logger('server')
+logger = common.get_child_logger('server')
 
 
 class InfoHandler(web.RequestHandler):
@@ -36,7 +35,7 @@ class InfoHandler(web.RequestHandler):
         ))
 
 
-class CentralServer(IOLoopService):
+class CentralServer(common.IOLoopService):
 
     def __init__(self, port, **kwargs):
         super(CentralServer, self).__init__(**kwargs)
@@ -58,7 +57,7 @@ class CentralServer(IOLoopService):
 
 
 def main(port):
-    setup_default_logger()
+    common.setup_default_logger()
     try:
         server = CentralServer(port)    
         server.run_ioloop()

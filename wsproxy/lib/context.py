@@ -10,7 +10,7 @@ import asyncio
 from enum import Enum
 from functools import partial
 from tornado import tcpserver, tcpclient, websocket, ioloop
-from logger import get_child_logger
+from wsproxy.lib.common import get_child_logger
 
 
 class WsContext(object):
