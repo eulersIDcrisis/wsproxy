@@ -24,6 +24,9 @@ def setup_default_logger():
 def get_child_logger(name):
     return main_logger.getChild(name)
 
+server_logger = get_child_logger("server")
+client_logger = get_child_logger("client")
+
 
 def register_signal_handler(handler):
     """Register the signal handler to stop the given IOLoop."""

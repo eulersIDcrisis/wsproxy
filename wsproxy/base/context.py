@@ -10,7 +10,6 @@ import asyncio
 from enum import Enum
 from functools import partial
 from tornado import tcpserver, tcpclient, websocket, ioloop
-from wsproxy.lib.common import get_child_logger
 
 
 class WsContext(object):
@@ -106,176 +105,6 @@ class WebsocketState(object):
         pass
 
 
-class WsServerConnection(websocket.WebSocketHandler):
-    """Single connection to the server.
-    
-    This maps all of the reads and writes from the tornado Websocket to the
-    passed 'processor' aggregate class.
-    """
-
-    def initialize(self, context=None):
-        self._context = weakref.ref(context)
-        self._state = None
-        self.client_ip = None
-        self.client_port = None
-        self.cxn_id = None
-
-    @property
-    def context(self):
-        return self._context()
-
-    @property
-    def client_url(self):
-        return '{}:{}'.format(self.client_ip, self.client_port)
-
-    def open(self):
-        if self.request.connection.stream is None:
-            args = self.request.connection.context.address
-            self.client_ip = args[0]
-            self.client_port = args[1]
-        else:
-            self.client_ip = self.request.remote_ip
-            self.client_port = self.request.connection.stream.socket.getpeername()[1]
-        
-        self.cxn_id = '{}:{}'.format(self.client_ip, self.client_port) or uuid.uuid1().hex
-
-        logger.info("Client connection received from: %s", self.client_url)
-        logger.info("Received at URL: %s", self.request.full_url())
-
-        self._state = self.context.add_connection(self.cxn_id, self)
-
-    def on_close(self):
-        try:
-            logger.info("Closing connection from: %s", self.client_url)
-            context = self.context
-            if context:
-                context.remove_connection(self.cxn_id)
-        finally:
-            self._state = None
-
-    async def on_message(self, message):
-        await self._state.on_message(message)
-
-
-def get_hostname():
-    import socket
-    
-    try:
-        hostname = socket.gethostname()
-    except Exception:
-        return "(not found)"
-    try:
-        ipaddr = socket.gethostbyaddr(hostname)
-        if ipaddr:
-            return u'{}-{}'.format(hostname, ipaddr)
-    except Exception:
-        pass
-    return hostname
-
-
-class WsClientConnection(object):
-
-    def __init__(self, url, context):
-        self.cxn_id = get_hostname()
-        self.url = url
-        self.context = context
-    
-    @property
-    def cxn(self):
-        return self._cxn
-    
-    async def run(self):
-        # Connect the socket first.
-        client_id = uuid.uuid1().hex
-        try:
-            self.cxn = await websocket.websocket_connect(
-                self.url, connect_timeout=10, compression_options={},
-                ping_interval=5, ping_timeout=5, max_message_size=100
-            )
-            
-            # Once a connection comes through, register this with the state.
-            self.context.add_connection(self.cxn_id, self.cxn)
-
-            # Once the connection is received, send a message to notify
-            # the server of this client ID.            
-        except Exception:
-            self.cxn = None
-            raise
-        
-        # After connecting, listen for messages.
-        while True:
-            msg = await self.read_message()
-            if msg is None:
-                # Websocket closed, exit.
-                return
-            yield self.state.process_message(msg)
-
-
-#
-# SERVER-SIDE
-#
-logger = get_child_logger('server')
-
-
-
-
-class ServerContext(object):
-
-    def __init__(self):
-        # Maps: ws -> ws_context (with the servers attached to it).
-        self.ws_mapping = {}
-        # Maps port -> server
-        self.server_mapping = {}
-
-    def add_connection(self, ws):
-        self.ws_mapping[ws] = WsContext(ws)
-    
-    def remove_connection(self, ws, close_all=False):
-        cxn = self.ws_mapping.pop(ws, None)
-        if not cxn or not cxn.client_id:
-            return
-        for server in cxn.local_servers:
-            server.close()
-            self.server_mapping.pop(server.port, None)
-
-    def update_connection(self, ws, client_id):
-        if ws in self.ws_mapping:
-            self.ws_mapping[ws].client_id = client_id
-
-    def register_client_port(self, ws, client_port):
-        server = LocalTCPServer(ws, client_port)
-        server.start()
-        self.server_mapping[client_port] = server
-        self.ws_mapping[ws].local_servers.append(server)
-
-
-#
-# CLIENT-SIDE
-#
-class ClientContext(object):
-    
-    def __init__(self):
-        self.stream_mapping = {}
-        self.tcp_client = tcpclient.TCPClient()
-
-    async def open_tcp_stream(self, port, stm_id):
-        stream = await self.tcp_client.connect('localhost', port)
-        self.stream_mapping[stm_id] = stream
-        return stream
-
-    def get_stream(self, stm_id):
-        return self.stream_mapping.get(stm_id)
-    
-    def close_stream(self, stm_id):
-        stm = self.stream_mapping.pop(stm_id, None)
-        if stm:
-            stm.close()
-    
-    def close_all(self):
-        for stm in self.stream_mapping.values():
-            stm.close()
-
-
 class LocalTCPServer(tcpserver.TCPServer):
     
 #     @classmethod
@@ -353,8 +182,8 @@ class Route(object):
     def name(self):
         return self._route_name
     
-    def __call__(self, response_proxy, args):
-        self.handler(response_proxy, args)
+    async def __call__(self, response_proxy, args):
+        return await self._handler(response_proxy, args)
 
 
 class JsonResponseProxy(object):
@@ -439,7 +268,7 @@ class JsonParser(object):
 
             # Otherwise, we should invoke a new handler from scratch.
             handler = self.route_mapping.get(route)
-            if not route_handler:
+            if not handler:
                 raise Exception("Invalid route!")
 
             # Otherwise, create the route, await it, then run it. The responsibility

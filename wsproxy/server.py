@@ -11,8 +11,10 @@ import traceback
 from tornado import (
     websocket, web, ioloop, iostream, httpserver, netutil, tcpserver
 )
-from wsproxy.lib.context import JsonWsContext, WsServerConnection
-from wsproxy.lib import common
+from wsproxy.base import common
+from wsproxy.base.context import JsonWsContext
+from wsproxy.base.server_util import WsServerConnection
+from wsproxy.echo.routes import EchoContext
 
 
 logger = common.get_child_logger('server')
@@ -46,6 +48,7 @@ class CentralServer(common.IOLoopService):
         app = web.Application([
             (r'/', WsServerConnection, dict(context=self.context)),
             (r'/info', InfoHandler, dict(context=self.context)),
+            (r'/echo', WsServerConnection, dict(context=EchoContext()))
         ])
         self.server = httpserver.HTTPServer(app)
         sockets = netutil.bind_sockets(self.port)
