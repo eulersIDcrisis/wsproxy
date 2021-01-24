@@ -1,21 +1,20 @@
-# -*- coding: utf-8 -*-
-"""common.py.
+"""util.py.
 
-Common code for client and server code.
+Utilities for managing connections.
 """
-import copy
+
+import uuid
 import signal
 import logging
-import threading
+import weakref
 from functools import partial
-from tornado import ioloop, gen
-
+from tornado import tcpserver, ioloop
 
 main_logger = logging.getLogger('wsproxy')
 
 
-def setup_default_logger():
-    main_logger.setLevel(logging.INFO)
+def setup_default_logger(level=logging.INFO):
+    main_logger.setLevel(level)
 
     stream_handler = logging.StreamHandler()
     main_logger.addHandler(stream_handler)
@@ -24,8 +23,30 @@ def setup_default_logger():
 def get_child_logger(name):
     return main_logger.getChild(name)
 
+
 server_logger = get_child_logger("server")
 client_logger = get_child_logger("client")
+
+
+def get_hostname():
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        return "(not found)"
+    try:
+        ipaddr = socket.gethostbyaddr(hostname)
+        if ipaddr:
+            return u'{}-{}'.format(hostname, ipaddr)
+    except Exception:
+        pass
+    return hostname
+
+
+async def pipe_stream(stm1, stm2, buffer_size=2 ** 16):
+    buff = bytearray(buffer_size)
+    while True:
+        count = await stm1.read_into(buff, partial=True)
+        await stm2.write(memoryview(buff)[0:count])
 
 
 def register_signal_handler(handler):
@@ -37,7 +58,7 @@ def register_signal_handler(handler):
     signal.signal(signal.SIGTERM, _handler)
 
 
-class IOLoopService(object):
+class IOLoopContext(object):
 
     def __init__(self, setup_sighandler=True, use_ioloop=None):
         self.shutdown_hooks = []
@@ -104,3 +125,25 @@ class IOLoopService(object):
             self.ioloop.add_callback_from_signal(self._stop)
         else:
             self.ioloop.add_callback(self._stop)
+
+
+class LocalTcpServer(tcpserver.TCPServer):
+
+    def __init__(self, port, server_id=None):
+        super(LocalTcpServer, self).__init__()
+        self._port = port
+    
+    @property
+    def port(self):
+        return self._port
+
+    def setup(self):
+        # We _could_ handle the binding more directly. But this works for now.
+        self.listen(self.port)
+
+    def teardown(self):
+        """Stop receiving new connections, then close any outstanding ones."""
+        self.stop()
+
+    async def handle_stream(self, stream, address):
+        raise NotImplementedError("Override in a subclass.")

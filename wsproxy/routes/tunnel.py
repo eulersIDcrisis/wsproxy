@@ -1,0 +1,187 @@
+"""socket.py.
+
+Implement the routes and parsers for arbitrary sockets.
+"""
+import uuid
+import asyncio
+from tornado import iostream, tcpclient
+from wsproxy import util
+from wsproxy.parser.json import (
+    Route, RouteType, setup_subscription, SubscriptionComplete
+)
+from wsproxy.parser.proxy import RawProxyParser
+
+
+logger = util.get_child_logger('tunnel')
+
+
+class LocalSocketClosed(iostream.StreamClosedError):
+    """Exception if the local socket closed."""
+
+
+class RemoteSocketClosed(iostream.StreamClosedError):
+    """Exception if the remote socket closed."""
+
+
+class TcpLocalTunneledSocket(object):
+    """Socket that reads/writes to the endpoint."""
+
+    def __init__(self, socket_id, state, stream, queue_size=10):
+        self._stream = stream
+        self._socket_id = socket_id
+        self.state = state
+        self._connected_event = asyncio.Event()
+        self._queue = asyncio.Queue(maxsize=queue_size)
+        self._count = 0
+
+    @property
+    def socket_id(self):
+        return self._socket_id
+
+    def get_bind_host_port_tuple(self):
+        return self._stream.socket.getsockname()
+
+    async def close(self):
+        # Set the event.
+        self._connected_event.set()
+        # Close the stream.
+        if self._stream and not self._stream.closed():
+            self._stream.close()
+            self._stream = None
+
+    async def _write_proxied_bytes(self, data):
+        await self._queue.put(data)
+
+    async def start_reading(self):
+        raw_buff = bytearray(2 ** 16 + 18)
+        while not self._connected_event.is_set():
+            await self._read_chunk(raw_buff)
+
+    async def start_writing(self):
+        while not self._connected_event.is_set():
+            await self._write_chunk()
+
+    async def run(self):
+        try:
+            read_task = asyncio.create_task(self.start_reading())
+            write_task = asyncio.create_task(self.start_writing())
+            await asyncio.gather(read_task, write_task)
+        except iostream.StreamClosedError:
+            logger.info("Closing socket.")
+            return
+
+    async def __aenter__(self):
+        # Add the socket and handler to the socket_mapping of the current state.
+        # This permits listening for updates to the socket. We do this before
+        # sending that the request was successful to avoid dropping any data.
+        self.state.add_proxy_socket(self.socket_id, self._write_proxied_bytes)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, tb):
+        await self.close()
+        self.state.remove_proxy_socket(self.socket_id)
+
+    async def _write_chunk(self):
+        try:
+            data = await self._queue.get()
+            await self._stream.write(data)
+            self._count += 1
+        finally:
+            self._queue.task_done()
+
+    async def _read_chunk(self, raw_buff):
+        buff = memoryview(raw_buff)
+        buff[0] = RawProxyParser.opcode
+        buff[1:17] = self._socket_id.bytes
+
+        count = await self._stream.read_into(buff[18:], partial=True)
+        await self.state.write_message(raw_buff[0:18 + count])
+        # try:
+        #     count = await self._stream.read_into(buff[18:], partial=True)
+        # except iostream.StreamClosedError:
+        #     raise LocalSocketClosed()
+        # try:
+        #     # Write out the message.
+        #     await self.state.write_message(raw_buff[0:18 + count])
+        # except iostream.StreamClosedError:
+        #     raise RemoteSocketClosed()
+
+
+class LocalSocket(object):
+    """Manage a local socket that sends/receives data over a proxy."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+
+async def local_socket_subscription(endpoint, args):
+    try:
+        protocol = args['protocol']
+        host = args['host']
+        port = args['port']
+        try:
+            socket_id = uuid.UUID(args['socket_id'])
+        except Exception:
+            raise KeyError('socket_id')
+        # For now, just handle TCP
+        assert protocol.lower() == 'tcp'
+    except KeyError as ke:
+        await endpoint.error(dict(message="Missing or Invalid field: {}".format(ke)))
+        return
+    except Exception:
+        await endpoint.error(dict(message="Internal Error"))
+        return
+
+    logger.info("Setup proxy (ID: %s) to: %s:%d", socket_id.hex, host, port)
+
+    state = endpoint.state
+
+    try:
+        client = tcpclient.TCPClient()
+        stream = await client.connect(host, port)
+    except Exception:
+        logger.exception("Error opening connection to %s:%s", host, port)
+        await endpoint.error(dict(
+            connection_status="error", message="Could not connect."))
+        return
+
+    # Setup the tunnel with our opened stream.
+    async with TcpLocalTunneledSocket(socket_id, state, stream) as tunneled_socket:
+        # At this point we have a successful connection. Return to the caller
+        # that the connection is up. Return the 'socket_id' in case it was
+        # autogenerated on the part of the client.
+        bind_host, bind_port = tunneled_socket.get_bind_host_port_tuple()
+
+        # task = asyncio.create_task(tunneled_socket.start_reading())
+        task = asyncio.create_task(tunneled_socket.run())
+        while True:
+            try:
+                await endpoint.next(dict(
+                    connection_status="connected", socket_id=socket_id.hex,
+                    bind_host=bind_host, bind_port=bind_port))
+
+
+                await asyncio.wait_for(task, timeout=10.0)
+                break
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                logger.exception("Unexpected exception parsing stream!")
+                await endpoint.error(dict(
+                    connection_status="error", socket_id=socket_id.hex,
+                    message="Unexpected error..."))
+                break
+
+        # Close the connection at this point.
+        await endpoint.next(dict(
+            connection_status="closed", socket_id=socket_id.hex))
+        await tunneled_socket.close()
+
+    logger.info("Closing proxy (ID: %s) for: %s:%d", socket_id.hex, host, port)
+
+
+def get_routes():
+    return [
+        Route(RouteType.SUB, "proxy_socket", local_socket_subscription),
+        # Route(RouteType.SUB, "socket_throttle", write_socket_subscription),
+    ]
