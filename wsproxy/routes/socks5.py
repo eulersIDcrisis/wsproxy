@@ -13,7 +13,9 @@ from tornado import ioloop, tcpserver, tcpclient, iostream, gen
 from wsproxy import util
 from wsproxy.context import WsContext
 from wsproxy.routes import info, proxy
-from wsproxy.parser.json import Route, RouteType, setup_subscription
+from wsproxy.parser.json import (
+    Route, RouteType, setup_subscription, SubscriptionComplete
+)
 
 
 # Create the default logger for SOCKS 5.
@@ -144,16 +146,19 @@ class ProxySocks5Server(Socks5Server):
         self.pending_cxns = {}
 
     async def handle_connection(self, local_stream, protocol, address, port):
-        async with AsyncExitStack() as exit_stack:
-            exit_stack.callback(local_stream.close)
+        try:
+            async with AsyncExitStack() as exit_stack:
+                exit_stack.callback(local_stream.close)
 
-            remote_socket = proxy.ProxySocket(self.endpoint, local_stream, address, port)
-            await remote_socket.open()
-            exit_stack.push_async_callback(remote_socket.close)
+                remote_socket = proxy.ProxySocket(self.endpoint, local_stream, address, port)
+                await remote_socket.open()
+                exit_stack.push_async_callback(remote_socket.close)
 
-            await self._complete_socks5_handshake(
-                local_stream, remote_socket.bind_host, remote_socket.bind_port)
-            await remote_socket.run()
+                await self._complete_socks5_handshake(
+                    local_stream, remote_socket.bind_host, remote_socket.bind_port)
+                await remote_socket.run()
+        except (SubscriptionComplete, iostream.StreamClosedError):
+            logger.debug("Closing proxy stream")
 
         # cxn_id = uuid.uuid1()
 

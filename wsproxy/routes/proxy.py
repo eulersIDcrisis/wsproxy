@@ -65,16 +65,19 @@ class _RawProxyStream(object):
                     cond.notify_all()
 
         monitor_fut = asyncio.create_task(_monitor_update())
-
         buff = memoryview(self._buffer)
-        while True:
-            count = await self._stream.read_into(buff[18:], partial=True)
-            state = self.get_websocket_state()
-            await state.write_message(buff[:18 + count], binary=True)
-            total_count += count
-            async with cond:
-                if total_count > recv_count + 1024:
-                    await cond.wait()
+        try:
+            while True:
+                count = await self._stream.read_into(buff[18:], partial=True)
+                state = self.get_websocket_state()
+                await state.write_message(buff[:18 + count], binary=True)
+                total_count += count
+                async with cond:
+                    if total_count > recv_count + 1024:
+                        await cond.wait()
+        finally:
+            if not monitor_fut.done():
+                monitor_fut.cancel()
 
     async def get_bytes_read(self):
         async with self._cond:
@@ -121,7 +124,7 @@ class ProxySocket(object):
         self._throttle_sub = None
         self._sub = None
         self._received = asyncio.Queue()
-        self._buff_size = 1024
+        self._buff_size = buffsize
 
     async def __aenter__(self):
         await self.open()
@@ -177,11 +180,10 @@ class ProxySocket(object):
 
         async def _monitor_update():
             nonlocal recv_count
-            while True:
-                print("MONITOR COUNT: {}".format(recv_count))
-                count = await self._monitor_sub.next()
+            async for msg in self._monitor_sub.result_generator():
+                count = msg.get('count', recv_count)
                 async with cond:
-                    recv_count += count
+                    recv_count = count
                     cond.notify_all()
 
         monitor_fut = asyncio.create_task(_monitor_update())
@@ -189,15 +191,16 @@ class ProxySocket(object):
         raw_buff[0] = RawProxyParser.opcode
         raw_buff[1:17] = self.socket_id.bytes
         buff = memoryview(raw_buff)
-        while True:
-            print("READING INTO LOCAL STREAM")
-            count = await self._local_stream.read_into(buff[18:], partial=True)
-            print("READ INTO LOCAL STREAM: {}".format(count))
-            await self.state.write_message(buff[:18 + count], binary=True)
-            total_count += count
-            async with cond:
-                if total_count > recv_count + 1024:
-                    await cond.wait()
+        try:
+            while True:
+                count = await self._local_stream.read_into(buff[18:], partial=True)
+                await self.state.write_message(buff[:18 + count], binary=True)
+                total_count += count
+                async with cond:
+                    if total_count > recv_count + 3 * self._buff_size:
+                        await cond.wait()
+        except (iostream.StreamClosedError, SubscriptionComplete):
+            pass
 
 
 # async def _remove_proxy_socket_helper(state, socket_id):
@@ -274,7 +277,19 @@ async def proxy_socket_subscription(endpoint, args):
                 connection_status="connected", socket_id=socket_id.hex,
                 bind_host=bind_host, bind_port=bind_port, count=0))
 
-            await proxy_stream.run_read_with_monitor_sub(monitor_sub)
+            async def _write_monitor_updates():
+                try:
+                    while True:
+                        byte_count = await proxy_stream.byte_count_update()
+                        await endpoint.next(dict(count=byte_count))
+                except (SubscriptionComplete, iostream.StreamClosedError):
+                    logger.info("Closing proxy socket monitor.")
+
+            monitor_fut = asyncio.create_task(
+                proxy_stream.run_read_with_monitor_sub(monitor_sub))
+            write_fut = asyncio.create_task(_write_monitor_updates())
+
+            await asyncio.gather(monitor_fut, write_fut)
 
         await endpoint.next(dict(
             connection_status="closed", socket_id=socket_id.hex))

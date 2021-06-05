@@ -105,7 +105,6 @@ class RawProxyParser(object):
             socket_id = uuid.UUID(bytes=message[1:17])
             if state.debug > 0:
                 logger.debug("%s RawProxy bytes received: %d", state.cxn_id, len(message))
-            print("STATE DEBUG: ", state.debug)
             if state.debug > 1:
                 logger.debug("%s Raw RECV %s: %s", state.cxn_id, socket_id.hex, message[18:])
 
