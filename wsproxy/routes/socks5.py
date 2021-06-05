@@ -12,7 +12,7 @@ from contextlib import AsyncExitStack
 from tornado import ioloop, tcpserver, tcpclient, iostream, gen
 from wsproxy import util
 from wsproxy.context import WsContext
-from wsproxy.routes import info, proxy
+from wsproxy.routes import info, tunnel
 from wsproxy.parser.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
 )
@@ -150,7 +150,7 @@ class ProxySocks5Server(Socks5Server):
             async with AsyncExitStack() as exit_stack:
                 exit_stack.callback(local_stream.close)
 
-                remote_socket = proxy.ProxySocket(self.endpoint, local_stream, address, port)
+                remote_socket = tunnel.ProxySocket(self.endpoint, local_stream, address, port)
                 await remote_socket.open()
                 exit_stack.push_async_callback(remote_socket.close)
 
@@ -160,140 +160,10 @@ class ProxySocks5Server(Socks5Server):
         except (SubscriptionComplete, iostream.StreamClosedError):
             logger.debug("Closing proxy stream")
 
-        # cxn_id = uuid.uuid1()
-
-        # async with tunnel.RemoteSocket(self.endpoint, address, port) as remote_socket:
-        #     # If we get here, the socket is setup, so notify the local socket.
-        #     await self._complete_socks5_handshake(
-        #         local_stream, remote_socket.bind_host, remote_socket.bind_port)
-        #     await remote_socket.proxy_to_stream(local_stream)
-
-        # sub = setup_subscription(
-        #     self.endpoint, "proxy_socket", dict(
-        #         protocol="tcp", host=str(address), port=port,
-        #         socket_id=self.socket_id.hex))
-        # async with sub:
-        #     # Receive the message implying that we've connected.
-        #     msg = await sub.next()
-        #     status = msg.get('connection_status')
-        #     socket_id = uuid.UUID(msg['socket_id'])
-        #     bind_host = msg['bind_host']
-        #     bind_port = msg['bind_port']
-
-        #     # Complete the handshake.
-        #     # await self._complete_socks5_handshake(local_stream, str(address), port)
-        #     await self._complete_socks5_handshake(local_stream, bind_host, bind_port)
-
-        #     # Create the proxied socket with the given socket ID.
-        #     # Use this as a context-manager, so everything cleans up
-        #     # when this exits or an exception is thrown.
-        #     async with tunnel.TcpLocalTunneledSocket(
-        #         socket_id, self.endpoint, local_stream
-        #     ) as tunneled_socket:
-        #         # Start the main loop. Wait for the local socket and for any remote
-        #         # messages. The order these events come in could be arbitrary, so
-        #         # handle this by listening on both, and awaiting whenever one of the
-        #         # futures is ready.
-        #         local_future = asyncio.create_task(tunneled_socket.start_reading())
-        #         sub_msg_future = asyncio.create_task(sub.next())
-
-        #         while True:
-        #             done, pending = await asyncio.wait([
-        #                 local_future, sub_msg_future
-        #             ], return_when=asyncio.FIRST_COMPLETED)
-
-        #             # Check the subscription.
-        #             if sub_msg_future in done:
-        #                 msg = sub_msg_future.result()
-        #                 status = msg.get('connection_status')
-        #                 if status == 'closed' or status == 'error':
-        #                     # Close the local socket.
-        #                     await tunneled_socket.close()
-        #                     return
-
-        #             # Check the local socket.
-        #             if local_future in done:
-        #                 await sub.close()
-        #                 return
-        # print("CLOSING CONNECTION to {}:{}".format(address, port))
 
     def close(self):
         for fut in self.pending_cxns.values():
             fut.cancel()
-
-# class ProxySocks5Server(Socks5Server):
-#     """SOCKS5 Proxy server that sends data over the websocket.
-
-#     This tunnels the data from the proxy server over a websocket.
-#     """
-
-#     def __init__(self, port, endpoint):
-#         super(ProxySocks5Server, self).__init__(port)
-#         self.endpoint = endpoint
-#         self.socket_id = uuid.uuid1()
-#         self.pending_cxns = {}
-
-#     async def handle_connection(self, local_stream, protocol, address, port):
-#         cxn_id = uuid.uuid1()
-
-#         async with tunnel.RemoteSocket(self.endpoint, address, port) as remote_socket:
-#             # If we get here, the socket is setup, so notify the local socket.
-#             await self._complete_socks5_handshake(
-#                 local_stream, remote_socket.bind_host, remote_socket.bind_port)
-#             await remote_socket.proxy_to_stream(local_stream)
-
-#         # sub = setup_subscription(
-#         #     self.endpoint, "proxy_socket", dict(
-#         #         protocol="tcp", host=str(address), port=port,
-#         #         socket_id=self.socket_id.hex))
-#         # async with sub:
-#         #     # Receive the message implying that we've connected.
-#         #     msg = await sub.next()
-#         #     status = msg.get('connection_status')
-#         #     socket_id = uuid.UUID(msg['socket_id'])
-#         #     bind_host = msg['bind_host']
-#         #     bind_port = msg['bind_port']
-
-#         #     # Complete the handshake.
-#         #     # await self._complete_socks5_handshake(local_stream, str(address), port)
-#         #     await self._complete_socks5_handshake(local_stream, bind_host, bind_port)
-
-#         #     # Create the proxied socket with the given socket ID.
-#         #     # Use this as a context-manager, so everything cleans up
-#         #     # when this exits or an exception is thrown.
-#         #     async with tunnel.TcpLocalTunneledSocket(
-#         #         socket_id, self.endpoint, local_stream
-#         #     ) as tunneled_socket:
-#         #         # Start the main loop. Wait for the local socket and for any remote
-#         #         # messages. The order these events come in could be arbitrary, so
-#         #         # handle this by listening on both, and awaiting whenever one of the
-#         #         # futures is ready.
-#         #         local_future = asyncio.create_task(tunneled_socket.start_reading())
-#         #         sub_msg_future = asyncio.create_task(sub.next())
-
-#         #         while True:
-#         #             done, pending = await asyncio.wait([
-#         #                 local_future, sub_msg_future
-#         #             ], return_when=asyncio.FIRST_COMPLETED)
-
-#         #             # Check the subscription.
-#         #             if sub_msg_future in done:
-#         #                 msg = sub_msg_future.result()
-#         #                 status = msg.get('connection_status')
-#         #                 if status == 'closed' or status == 'error':
-#         #                     # Close the local socket.
-#         #                     await tunneled_socket.close()
-#         #                     return
-
-#         #             # Check the local socket.
-#         #             if local_future in done:
-#         #                 await sub.close()
-#         #                 return
-#         # print("CLOSING CONNECTION to {}:{}".format(address, port))
-
-#     def close(self):
-#         for fut in self.pending_cxns.values():
-#             fut.cancel()
 
 
 async def socks5_proxy_subscription(endpoint, args):

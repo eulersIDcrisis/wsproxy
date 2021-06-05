@@ -24,10 +24,6 @@ def get_child_logger(name):
     return main_logger.getChild(name)
 
 
-server_logger = get_child_logger("server")
-client_logger = get_child_logger("client")
-
-
 def get_hostname():
     try:
         hostname = socket.gethostname()
