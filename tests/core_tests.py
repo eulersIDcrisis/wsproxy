@@ -6,8 +6,9 @@ import unittest
 import logging
 from tornado import ioloop, web, websocket, testing
 # Local imports
-from wsproxy.context import WsContext, WebsocketState
-from wsproxy.connection import WsServerHandler, WsClientConnection
+from wsproxy.core import (
+    WsContext, WebsocketState, WsServerHandler, WsClientConnection
+)
 import wsproxy.parser.json as json_request
 from wsproxy.routes import info as info_routes
 # Testing imports

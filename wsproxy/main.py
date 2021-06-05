@@ -16,8 +16,9 @@ from tornado import (
     websocket, web, ioloop, iostream, httpserver, netutil, tcpserver
 )
 from wsproxy import util
-from wsproxy.context import WsContext
-from wsproxy.connection import WsServerHandler, WsClientConnection
+from wsproxy.core import (
+    WsContext, WsServerHandler, WsClientConnection
+)
 from wsproxy.parser.json import once
 from wsproxy.parser.proxy import RawProxyParser
 from wsproxy.routes import (
@@ -27,6 +28,13 @@ from wsproxy.routes import (
 
 logger = util.get_child_logger('server')
 
+
+def get_context(debug=0):
+    routes = info.get_routes()
+    routes.extend(tunnel.get_routes())
+    routes.extend(socks5.get_routes())
+
+    return WsContext(routes, debug=debg)
 
 class ServerContext(WsContext):
 
@@ -215,3 +223,15 @@ def client_main():
         service.run_ioloop()
     except Exception:
         logger.exception("Error in program!")
+
+
+def global_main():
+    """Main entrypoint for local development.
+
+    This will determine whether to run the server or client entrypoint depending
+    on the first argument.
+
+    NOTE: This call is NOT recommended for standard use and is only offered as a
+    convenience for local development.
+    """
+    # TODO

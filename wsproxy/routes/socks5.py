@@ -11,7 +11,7 @@ import ipaddress
 from contextlib import AsyncExitStack
 from tornado import ioloop, tcpserver, tcpclient, iostream, gen
 from wsproxy import util
-from wsproxy.context import WsContext
+from wsproxy.core import WsContext
 from wsproxy.routes import info, tunnel
 from wsproxy.parser.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
