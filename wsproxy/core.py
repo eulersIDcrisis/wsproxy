@@ -13,7 +13,7 @@ import asyncio
 from functools import wraps
 from enum import Enum
 from functools import partial
-from tornado import tcpserver, tcpclient, websocket, ioloop
+from tornado import tcpserver, tcpclient, websocket, ioloop, httpclient
 from wsproxy.util import main_logger as logger
 from wsproxy.parser.json import JsonParser
 from wsproxy.parser.proxy import RawProxyParser
@@ -29,9 +29,19 @@ def generate_connection_id():
 class WsClientConnection(object):
     """Handle an outgoing connection to some server."""
 
-    def __init__(self, context, url):
+    def __init__(self, context, url_or_request):
         self.cxn_id = generate_connection_id()
-        self.url = url
+
+        if isinstance(url_or_request, str):
+            self.url = url_or_request
+            self.request = httpclient.HTTPRequest(
+                self.url, connect_timeout=10)
+        else:
+            self.request = url_or_request
+            self.url = self.request.url
+        # For now, override the request timeout to 10 seconds (?)
+        self.request.connect_timeout = 10
+
         self.context = context
         self._is_connected = asyncio.Event()
 
@@ -48,8 +58,9 @@ class WsClientConnection(object):
         return self._state
 
     async def open(self):
+
         self._cxn = await websocket.websocket_connect(
-            self.url, connect_timeout=10, compression_options={},
+            self.request, compression_options={},
             ping_interval=5, ping_timeout=15)
         state = await self.context.add_outgoing_connection(
             self.cxn_id, self, other_url=self.url)
@@ -76,7 +87,7 @@ class WsClientConnection(object):
 
 class WsServerHandler(websocket.WebSocketHandler):
     """Handle connection requests for a server.
-    
+
     This maps all of the reads and writes from the tornado Websocket to the
     passed 'processor' aggregate class.
     """

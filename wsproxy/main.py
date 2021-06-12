@@ -13,7 +13,8 @@ import argparse
 import itertools
 import traceback
 from tornado import (
-    websocket, web, ioloop, iostream, httpserver, netutil, tcpserver
+    web, websocket, ioloop, iostream, httpserver, netutil, tcpserver,
+    httpclient
 )
 from wsproxy import util
 from wsproxy.core import (
@@ -73,55 +74,64 @@ class ClientInfoHandler(web.RequestHandler):
             await self.finish()
 
 
-class CentralServer(util.IOLoopContext):
+class WsproxyServer(util.IOLoopContext):
 
-    def __init__(self, port, debug=0):
-        super(CentralServer, self).__init__()
-        self.port = port
+    def __init__(self, debug=0):
+        super().__init__()
         
         # Create the master context.
         self.context = get_context(debug=debug)
 
-        app = web.Application([
+        self.app = web.Application([
             (r'/', WsServerHandler, dict(context=self.context)),
             (r'/client/details', InfoHandler, dict(context=self.context)),
             (r'/client/(?P<cxn_id>[^/]+)', ClientInfoHandler, dict(context=self.context))
         ])
-        self.server = httpserver.HTTPServer(app)
-        sockets = netutil.bind_sockets(self.port)
-        self.server.add_sockets(sockets)
-        self.server.start()
-        
+        self.servers = []
+
+    def bind_to_ports(self, ports=None, unix_sockets=None):
+        if not ports and not unix_sockets:
+            return
+
+        ports = ports or []
+        unix_sockets = unix_sockets or []
+
+        server = httpserver.HTTPServer(self.app)
+        for port in ports:
+            sockets = netutil.bind_sockets(port)
+            server.add_sockets(sockets)
+
+        # Also include any UNIX sockets, as needed.
+        for path in unix_sockets:
+            socket = netutil.bind_unix_socket(path)
+            server.add_sockets([socket])
+
+        # Start the server, so it can process once the loop starts.
+        server.start()
+        self.servers.append(server)
         # Add these hooks to drain cleanly.
-        self.add_ioloop_drain_hook(self.server.close_all_connections)
+        self.add_ioloop_drain_hook(server.close_all_connections)
 
+    def bind_to_ssl_ports(self, ports, cert_path, key_path):
+        import ssl
 
-def server_main():
-    parser = argparse.ArgumentParser(description='Run a server endpoint.')
-    parser.add_argument('--port', help="Port to bind the server to.", type=int, default=8080)
-    parser.add_argument('-v', '--verbose', help="Verbose logging", action='count')
-
-    args = parser.parse_args()
-
-    port = args.port
-    debug = args.verbose
-
-    util.setup_default_logger(logging.DEBUG if debug else logging.INFO)
-    try:
-        logger.info("Running server on port: %s", port)
-        server = CentralServer(port, debug=debug)
-        server.run_ioloop()
-        sys.exit(0)
-    except Exception:
-        traceback.print_exc()
-        sys.exit(1)
+        ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_ctx.load_cert_chain(cert_path, key_path)
+        server = httpserver.HTTPServer(self.app, ssl_options=ssl_ctx)
+        for port in ports:
+            sockets = netutil.bind_sockets(port)
+            server.add_sockets(sockets)
+        server.start()
+        self.servers.append(server)
+        self.add_ioloop_drain_hook(server.close_all_connections)
 
 
 class ClientService(util.IOLoopContext):
 
-    def __init__(self, server_url, debug=0):
+    def __init__(self, server_request, debug=0):
         super(ClientService, self).__init__()
-        self.server_url = server_url
+        self.request = server_request
+        self.server_url = server_request.url
         self._is_connected = asyncio.Event()
         self.ioloop.add_callback(self.run_main_loop)
         
@@ -154,7 +164,7 @@ class ClientService(util.IOLoopContext):
 
     async def _run_connection(self):
         try:
-            cxn = WsClientConnection(self.context, self.server_url)
+            cxn = WsClientConnection(self.context, self.request)
             try:
                 state = await cxn.open()
             except Exception as exc:
@@ -177,9 +187,25 @@ class ClientService(util.IOLoopContext):
 def run_server(args):
     debug = args.verbose or 0
     port = args.port
+    unix_sockets = args.unix_sockets or []
+    cert_paths = getattr(args, 'cert_path', [])
+    if len(cert_paths) == 2:
+        cert_path = cert_paths[0]
+        key_path = cert_paths[1]
+    else:
+        cert_path = None
+        key_path = None
+
     try:
         logger.info("Running server on port: %s", port)
-        server = CentralServer(port, debug=debug)
+        server = WsproxyServer(debug=debug)
+
+        if cert_path and key_path:
+            server.bind_to_ssl_ports([port], cert_path, key_path)
+            # Do NOT bind UNIX sockets with SSL for now.
+            server.bind_to_ports([], unix_sockets=unix_sockets)
+        else:
+            server.bind_to_ports([port], unix_sockets=unix_sockets)
         server.run_ioloop()
         sys.exit(0)
     except Exception:
@@ -190,8 +216,23 @@ def run_server(args):
 def run_client(args):
     debug = args.verbose or 0
     url = args.server_url
+    cert_path = getattr(args, 'cert_path', '')
+    verify_host = getattr(args, 'verify_host', True)
+
+    if cert_path:
+        import ssl
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = verify_host
+        context.load_verify_locations(cert_path)
+    else:
+        context = None
+
     try:
-        service = ClientService(url, debug=debug)
+        request = httpclient.HTTPRequest(
+            url, ssl_options=context)
+        service = ClientService(request, debug=debug)
 
         socks5_port = args.socks5
 
@@ -221,20 +262,35 @@ def main():
     on the options passed.
     """
     parser = argparse.ArgumentParser(description='Connect to an endpoint.')
-    parser.add_argument('-v', '--verbose', action='count',
-        help="Enable verbose output. Passing multiple times increases verbosity.")
+    parser.add_argument('-v', '--verbose', action='count', help=(
+        "Enable verbose output. Passing multiple times increases verbosity."))
     parsers = parser.add_subparsers(title='Modes and Commands', description=(
         'Different modes to operate this proxy in.'), dest='command')
 
     server_parser = parsers.add_parser('server', help="Run the proxy server.")
     server_parser.add_argument('-p', '--port', type=int, default=8080)
+    server_parser.add_argument('--unix-socket', type=str, nargs='*',
+                               dest='unix_sockets')
+    server_parser.add_argument(
+        '--ssl-cert', dest='cert_path', default='', nargs=2, type=str,
+        metavar=('CERT_FILE', 'KEY_FILE'),
+        help="Path to cert file and key file to use when running with SSL.")
+
     # Handy trick to call 'run_server' with the args after parsing them.
     server_parser.set_defaults(func=run_server)
 
-    client_parser = parsers.add_parser('client', help="Run the proxy as a client.")
-    client_parser.add_argument('server_url', help="Proxy server URL to connect to.")
-    client_parser.add_argument('--socks5', type=int,
-        help="Setup socks5 proxy on the given port that tunnels through the server.")
+    client_parser = parsers.add_parser(
+        'client', help="Run the client proxy.")
+    client_parser.add_argument(
+        'server_url', help="Proxy server URL to connect to.")
+    client_parser.add_argument(
+        '--ssl-cert', dest='cert_path', default='', type=str,
+        help="Path to certificate for verification.")
+    client_parser.add_argument(
+        '--ignore-host-verify', dest='verify_host', action='store_false')
+    client_parser.add_argument(
+        '--socks5', type=int, help=("Setup socks5 proxy on the given port that "
+                                    "tunnels through the server."))
     client_parser.set_defaults(func=run_client)
 
     # Parse the arguments.
