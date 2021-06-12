@@ -34,23 +34,7 @@ def get_context(debug=0):
     routes.extend(tunnel.get_routes())
     routes.extend(socks5.get_routes())
 
-    return WsContext(routes, debug=debg)
-
-class ServerContext(WsContext):
-
-    def __init__(self, debug=0):
-        routes = info.get_routes()
-        routes.extend(tunnel.get_routes())
-        routes.extend(socks5.get_routes())
-
-        super(ServerContext, self).__init__(routes, debug=debug)
-
-    def find_state_for_cxn_id(self, cxn_id):
-        res = self.cxn_state_mapping.get(cxn_id)
-        if res:
-            return res
-        res = self.cxn_state_mapping.get(cxn_id)
-        return res
+    return WsContext(routes, debug=debug)
 
 
 class InfoHandler(web.RequestHandler):
@@ -96,7 +80,7 @@ class CentralServer(util.IOLoopContext):
         self.port = port
         
         # Create the master context.
-        self.context = ServerContext(debug=debug)
+        self.context = get_context(debug=debug)
 
         app = web.Application([
             (r'/', WsServerHandler, dict(context=self.context)),
@@ -190,21 +174,26 @@ class ClientService(util.IOLoopContext):
             self._is_connected.clear()
 
 
-def client_main():
-    parser = argparse.ArgumentParser(description='Connect to an endpoint.')
-    parser.add_argument('server_url', help="The server to connect to.")
-    parser.add_argument('--socks5', help="Proxy through the server endpoint.", action='store_true')
-    parser.add_argument("--echo", help="Run the echo routes.", action='store_true')
-    parser.add_argument("--register", help="Port to run local server on.", type=int)
-    parser.add_argument('-v', '--verbose', help="Verbose logging", action='count')
-
-    args = parser.parse_args()
-
+def run_server(args):
     debug = args.verbose or 0
-
-    util.setup_default_logger(logging.DEBUG if debug > 0 else logging.INFO)
+    port = args.port
     try:
-        service = ClientService(args.server_url, debug=debug)
+        logger.info("Running server on port: %s", port)
+        server = CentralServer(port, debug=debug)
+        server.run_ioloop()
+        sys.exit(0)
+    except Exception:
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def run_client(args):
+    debug = args.verbose or 0
+    url = args.server_url
+    try:
+        service = ClientService(url, debug=debug)
+
+        socks5_port = args.socks5
 
         if args.socks5:
             # Setup a callback to start the SOCKS5 proxy server when it connects.
@@ -225,13 +214,45 @@ def client_main():
         logger.exception("Error in program!")
 
 
-def global_main():
-    """Main entrypoint for local development.
+def main():
+    """Main entrypoint for the proxy.
 
-    This will determine whether to run the server or client entrypoint depending
-    on the first argument.
-
-    NOTE: This call is NOT recommended for standard use and is only offered as a
-    convenience for local development.
+    This parses the program arguments and runs the server or client, depending
+    on the options passed.
     """
-    # TODO
+    parser = argparse.ArgumentParser(description='Connect to an endpoint.')
+    parser.add_argument('-v', '--verbose', action='count',
+        help="Enable verbose output. Passing multiple times increases verbosity.")
+    parsers = parser.add_subparsers(title='Modes and Commands', description=(
+        'Different modes to operate this proxy in.'), dest='command')
+
+    server_parser = parsers.add_parser('server', help="Run the proxy server.")
+    server_parser.add_argument('-p', '--port', type=int, default=8080)
+    # Handy trick to call 'run_server' with the args after parsing them.
+    server_parser.set_defaults(func=run_server)
+
+    client_parser = parsers.add_parser('client', help="Run the proxy as a client.")
+    client_parser.add_argument('server_url', help="Proxy server URL to connect to.")
+    client_parser.add_argument('--socks5', type=int,
+        help="Setup socks5 proxy on the given port that tunnels through the server.")
+    client_parser.set_defaults(func=run_client)
+
+    # Parse the arguments.
+    args = parser.parse_args()
+
+    # Setup the logger based on some of the arguments.
+    debug = args.verbose or 0
+    util.setup_default_logger(logging.DEBUG if debug > 0 else logging.INFO)
+
+    # Run the appropriate function, if set.
+    if not hasattr(args, 'func'):
+        # Print the help and exit.
+        parser.print_help()
+        return
+
+    # Call the appropriate function.
+    return args.func(args)
+
+
+if __name__ == '__main__':
+    main()

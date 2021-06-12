@@ -264,7 +264,7 @@ class BaseRequest(object):
         elif status == 'error':
             raise SubscriptionError(msg['message'])
         else:
-            logger.error("INVALID MESSAGE: %s", msg)
+            logger.error("Invalid message: %s", msg)
             raise ValueError("Invalid message!")
 
     async def handle_response(self, msg):
