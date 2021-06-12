@@ -83,9 +83,9 @@ class WsproxyServer(util.IOLoopContext):
         self.context = get_context(debug=debug)
 
         self.app = web.Application([
-            (r'/', WsServerHandler, dict(context=self.context)),
-            (r'/client/details', InfoHandler, dict(context=self.context)),
-            (r'/client/(?P<cxn_id>[^/]+)', ClientInfoHandler, dict(context=self.context))
+            (r'/api/ws', WsServerHandler, dict(context=self.context)),
+            (r'/api/client/details', InfoHandler, dict(context=self.context)),
+            (r'/api/client/(?P<cxn_id>[^/]+)', ClientInfoHandler, dict(context=self.context))
         ])
         self.servers = []
 
@@ -287,7 +287,9 @@ def main():
         '--ssl-cert', dest='cert_path', default='', type=str,
         help="Path to certificate for verification.")
     client_parser.add_argument(
-        '--ignore-host-verify', dest='verify_host', action='store_false')
+        '--ignore-verify-host', dest='verify_host', action='store_false',
+        help=("Do not verify the hostname for the certificate. Useful for "
+              "running with a trusted certificate, but no DNS record."))
     client_parser.add_argument(
         '--socks5', type=int, help=("Setup socks5 proxy on the given port that "
                                     "tunnels through the server."))
