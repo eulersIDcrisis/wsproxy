@@ -7,6 +7,7 @@ import json
 import asyncio
 from enum import Enum
 from tornado import websocket
+from wsproxy.auth import NotAuthorized
 from wsproxy.util import main_logger as logger
 
 
@@ -29,10 +30,11 @@ class RouteType(Enum):
 
 
 class Route(object):
-    def __init__(self, r_type, route_name, handler, is_class=False):
+    def __init__(self, r_type, route_name, handler, category='other'):
         self._route_type = RouteType(r_type)
         self._route_name = route_name
         self._handler = handler
+        self._category = category
 
     @property
     def route_type(self):
@@ -41,6 +43,14 @@ class Route(object):
     @property
     def name(self):
         return self._route_name
+
+    @property
+    def category(self):
+        """Return the category for this route.
+
+        Used to determine if this route is valid in some cases.
+        """
+        return self._category
 
     async def __call__(self, endpoint, args=None):
         """Run the route asynchronously."""
@@ -200,10 +210,16 @@ class JsonParser(object):
             sub = asyncio.create_task(handler(endpoint, args))
             # sub = asyncio.create_task(handler(state, msg_id, msg_type, args))
             state.msg_mapping[msg_id] = (sub, endpoint)
+
+            # Will raise a not authorized exception if invalid.
+            state.auth_manager.check_json_route(route, res.get('auth'))
+
             return
         except websocket.WebSocketClosedError:
             logger.error("Websocket closed")
             return
+        except auth.NotAuthorized as exc:
+            error = u"Not authorized!"
         except KeyError as exc:
             error = u'Missing field: {}'.format(exc)
         except ValueError as exc:

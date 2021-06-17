@@ -34,7 +34,7 @@ class Socks5Server(util.LocalTcpServer):
     def __init__(self, port):
         super(Socks5Server, self).__init__(port)
 
-    async def handle_stream(self, local_stream, address):
+    async def _handle_stream(self, local_stream, address):
         # SOCKS 5 PROXY PROTOCOL
         #
         # (1) Client should send a buffer with:
@@ -187,7 +187,7 @@ async def socks5_proxy_subscription(endpoint, args):
 def get_routes():
     """Return the routes that pertain to SOCKS5 proxies."""
     return [
-        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription)
+        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription, 'socks_proxy')
     ]
 
 

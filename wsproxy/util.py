@@ -13,11 +13,12 @@ from tornado import tcpserver, ioloop
 main_logger = logging.getLogger('wsproxy')
 
 
-def setup_default_logger(level=logging.INFO):
-    main_logger.setLevel(level)
+def setup_default_logger(handlers, level=logging.INFO):
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
 
-    stream_handler = logging.StreamHandler()
-    main_logger.addHandler(stream_handler)
+    for handler in handlers:
+        root_logger.addHandler(handler)
 
 
 def get_child_logger(name):
@@ -128,7 +129,9 @@ class LocalTcpServer(tcpserver.TCPServer):
     def __init__(self, port, server_id=None):
         super(LocalTcpServer, self).__init__()
         self._port = port
-    
+        self._stream_mapping = {}
+        self._next_id = 1
+
     @property
     def port(self):
         return self._port
@@ -142,4 +145,13 @@ class LocalTcpServer(tcpserver.TCPServer):
         self.stop()
 
     async def handle_stream(self, stream, address):
+        stream_id = self._next_id
+        self._next_id += 1
+        try:
+            self._stream_mapping[stream_id] = stream
+            await self._handle_stream(stream, address)
+        finally:
+            self._stream_mapping.pop(stream_id, None)
+
+    async def _handle_stream(self, stream, address):
         raise NotImplementedError("Override in a subclass.")

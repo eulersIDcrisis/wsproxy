@@ -15,7 +15,8 @@ setup(
     setup_requires=['flake8'],
     entry_points={
         'console_scripts': [
-            'wsproxy=wsproxy.main:main'
+            'wsproxy-server=wsproxy.service.server:main',
+            'wsproxy-client=wsproxy.service.client:main',
         ]
     }
 )

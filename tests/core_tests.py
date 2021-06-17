@@ -6,6 +6,7 @@ import unittest
 import logging
 from tornado import ioloop, web, websocket, testing
 # Local imports
+from wsproxy.auth import AuthManager
 from wsproxy.core import (
     WsContext, WebsocketState, WsServerHandler, WsClientConnection
 )
@@ -29,6 +30,7 @@ class WebsocketServerTest(testing.AsyncHTTPTestCase):
 
     async def ws_connect(self, protocol='ws', path='/'):
         url = "{}://127.0.0.1:{}{}".format(protocol, self.get_http_port(), path)
+
         cxn = WsClientConnection(self.client_context, url)
         state = await cxn.open()
         return state

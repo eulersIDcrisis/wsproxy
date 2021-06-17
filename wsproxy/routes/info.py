@@ -69,8 +69,8 @@ async def connection_info_subscription(endpoint, args):
 
 def get_routes():
     return [
-        Route(RouteType.ONCE, "echo", echo),
-        Route(RouteType.SUB, "info", info_subscription),
-        Route(RouteType.SUB, "count", count_subscription),
-        Route(RouteType.SUB, "connection_info", connection_info_subscription),
+        Route(RouteType.ONCE, "echo", echo, 'test'),
+        Route(RouteType.SUB, "count", count_subscription, 'test'),
+        Route(RouteType.SUB, "info", info_subscription, 'system-inpsect'),
+        Route(RouteType.SUB, "connection_info", connection_info_subscription, 'system-inpsect'),
     ]
