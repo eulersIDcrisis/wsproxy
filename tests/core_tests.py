@@ -6,7 +6,7 @@ import unittest
 import logging
 from tornado import ioloop, web, websocket, testing
 # Local imports
-from wsproxy.auth import AuthManager
+from wsproxy.auth_manager import AuthManager
 from wsproxy.core import (
     WsContext, WebsocketState, WsServerHandler, WsClientConnection
 )

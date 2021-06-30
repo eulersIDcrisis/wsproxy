@@ -54,14 +54,9 @@ async def connection_info_subscription(endpoint, args):
     """Subscription that updates everytime the connections change."""
     context = endpoint.state.context
     while True:
-        result = dict()
-        result['outgoing'] = {
-            cxn_id.hex: state.connection.url
-            for cxn_id, state in context.outgoing_mapping.items()
-        }
-        result['ingoing'] = {
-            cxn_id: state.connection.url
-            for cxn_id, state in context.incoming_mapping.items()
+        result = {
+            str(cxn_id): state.connection.url
+            for cxn_id, state in context.connection_mapping.items()
         }
         await endpoint.next(result)
         await context.wait_for_connection_change()

@@ -14,7 +14,7 @@ from functools import wraps
 from enum import Enum
 from functools import partial
 from tornado import tcpserver, tcpclient, websocket, ioloop, httpclient
-from wsproxy.auth import AuthManager
+from wsproxy.auth_manager import AuthManager
 from wsproxy.util import main_logger as logger
 from wsproxy.parser.json import JsonParser
 from wsproxy.parser.proxy import RawProxyParser
@@ -80,7 +80,7 @@ class WsClientConnection(object):
                     return
                 asyncio.create_task(self.state.on_message(msg))
         finally:
-            await self.context.remove_outgoing_connection(self.cxn_id)
+            await self.context.remove_connection(self.cxn_id)
             self._is_connected.clear()
 
     async def write_message(self, msg, binary=False):
@@ -104,7 +104,6 @@ class WsServerHandler(websocket.WebSocketHandler):
     async def get(self, *args, **kwargs):
         if not self.context.check_authentication(self):
             # Close the connection, since the user is not authorized.
-            print('closing"')
             self.set_status(401)
             self.write(dict(status=401, message="Not Authorized!"))
             return
@@ -145,8 +144,7 @@ class WsServerHandler(websocket.WebSocketHandler):
             logger.info("Closing client CXN with ID: %s", self.cxn_id)
             context = self.context
             if context:
-                asyncio.create_task(context.remove_incoming_connection(self.cxn_id))
-                # await context.remove_incoming_connection(self.cxn_id)
+                asyncio.create_task(context.remove_connection(self.cxn_id))
         finally:
             self._state = None
 
@@ -212,7 +210,7 @@ class WsContext(object):
             self._cond.notify_all()
         return state
 
-    async def remove_incoming_connection(self, cxn_id):
+    async def remove_connection(self, cxn_id):
         async with self._cond:
             state = self._cxn_mapping.pop(cxn_id, None)
             self._cond.notify_all()
@@ -225,24 +223,13 @@ class WsContext(object):
 
         state = WebsocketState(self, cxn, auth_manager, other_url=other_url, prefix='O')
         async with self._cond:
-            self._out_mapping[cxn_id] = state
+            self._cxn_mapping[cxn_id] = state
         return state
 
-    async def remove_outgoing_connection(self, cxn_id):
-        async with self._cond:
-            state = self._out_mapping.pop(cxn_id, None)
-        if state:
-            await state.close()
-
     @property
-    def incoming_mapping(self):
-        """Return the mapping of: incoming cxn ID -> WebsocketState."""
+    def connection_mapping(self):
+        """Return the mapping of: cxn ID -> WebsocketState."""
         return self._cxn_mapping
-
-    @property
-    def outgoing_mapping(self):
-        """Return the mapping of: outgoing cxn ID -> WebsocketState."""
-        return self._out_mapping
 
     @property
     def debug_enabled(self):

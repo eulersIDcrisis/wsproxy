@@ -11,7 +11,7 @@ setup(
         # Could possibly waive this to tornado 5.X, not sure.
         'tornado>=6.0.1',
         'psutil>=5.8.0',
-        'PyJWT>=2.1.0',
+        'pyjwt[crypto]>=2.1.0',
     ],
     setup_requires=['flake8'],
     entry_points={

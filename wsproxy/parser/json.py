@@ -7,7 +7,7 @@ import json
 import asyncio
 from enum import Enum
 from tornado import websocket
-from wsproxy.auth import NotAuthorized
+from wsproxy.auth_manager import NotAuthorized
 from wsproxy.util import main_logger as logger
 
 
@@ -218,7 +218,7 @@ class JsonParser(object):
         except websocket.WebSocketClosedError:
             logger.error("Websocket closed")
             return
-        except auth.NotAuthorized as exc:
+        except NotAuthorized as exc:
             error = u"Not authorized!"
         except KeyError as exc:
             error = u'Missing field: {}'.format(exc)

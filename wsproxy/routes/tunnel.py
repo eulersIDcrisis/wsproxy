@@ -8,7 +8,7 @@ import asyncio
 from contextlib import AsyncExitStack, ExitStack
 from tornado import iostream, tcpclient
 from wsproxy import util
-from wsproxy.auth import NotAuthorized
+from wsproxy.auth_manager import NotAuthorized
 from wsproxy.parser.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
 )

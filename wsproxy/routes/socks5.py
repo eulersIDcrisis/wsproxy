@@ -169,11 +169,24 @@ class ProxySocks5Server(Socks5Server):
 async def socks5_proxy_subscription(endpoint, args):
     try:
         port = int(args['port'])
+        cxn_id = args.get('cxn_id')
+
+        # Determine which endpoint state to use. In the case of a server,
+        # there might be multiple different connection IDs to connect to.
+        if cxn_id:
+            context = endpoint.state.context
+            socks_endpoint = context.connection_mapping.get(cxn_id)
+            if not socks_endpoint:
+                await endpoint.error("Invalid connection ID.")
+                return
+        else:
+            socks_endpoint = endpoint
     except Exception:
+        logger.exception("INVALID")
         await endpoint.error("Invalid arguments!")
         return
     try:
-        server = ProxySocks5Server(port, endpoint)
+        server = ProxySocks5Server(port, socks_endpoint)
         server.setup()
         await endpoint.next(dict(port=port))
 
