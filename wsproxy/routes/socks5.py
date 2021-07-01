@@ -182,7 +182,6 @@ async def socks5_proxy_subscription(endpoint, args):
         else:
             socks_endpoint = endpoint
     except Exception:
-        logger.exception("INVALID")
         await endpoint.error("Invalid arguments!")
         return
     try:
@@ -192,6 +191,9 @@ async def socks5_proxy_subscription(endpoint, args):
 
         while True:
             await asyncio.sleep(10.0)
+    except Exception:
+        logger.exception('Exception hosting SOCKS5 proxy subscription.')
+        await endpoint.error('Error in socks5 proxy!')
     finally:
         server.close()
         server.teardown()
@@ -200,7 +202,7 @@ async def socks5_proxy_subscription(endpoint, args):
 def get_routes():
     """Return the routes that pertain to SOCKS5 proxies."""
     return [
-        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription, 'socks_proxy')
+        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription, 'socks5_proxy')
     ]
 
 

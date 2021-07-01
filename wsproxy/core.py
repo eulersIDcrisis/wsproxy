@@ -60,7 +60,6 @@ class WsClientConnection(object):
         return self._state
 
     async def open(self):
-
         self._cxn = await websocket.websocket_connect(
             self.request, compression_options={},
             ping_interval=5, ping_timeout=15)

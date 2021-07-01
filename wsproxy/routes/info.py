@@ -54,9 +54,15 @@ async def connection_info_subscription(endpoint, args):
     """Subscription that updates everytime the connections change."""
     context = endpoint.state.context
     while True:
+        curr_cxn_id = endpoint.state.cxn_id
         result = {
-            str(cxn_id): state.connection.url
-            for cxn_id, state in context.connection_mapping.items()
+            'connections': {
+                str(cxn_id): dict(
+                    url=state.other_url
+                )
+                for cxn_id, state in context.connection_mapping.items()
+            },
+            'current_connection': curr_cxn_id
         }
         await endpoint.next(result)
         await context.wait_for_connection_change()
@@ -66,6 +72,6 @@ def get_routes():
     return [
         Route(RouteType.ONCE, "echo", echo, 'test'),
         Route(RouteType.SUB, "count", count_subscription, 'test'),
-        Route(RouteType.SUB, "info", info_subscription, 'system-inpsect'),
-        Route(RouteType.SUB, "connection_info", connection_info_subscription, 'system-inpsect'),
+        Route(RouteType.SUB, "info", info_subscription, 'system-inspect'),
+        Route(RouteType.SUB, "connection_info", connection_info_subscription, 'system-inspect'),
     ]
