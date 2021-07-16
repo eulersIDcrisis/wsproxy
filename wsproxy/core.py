@@ -64,7 +64,8 @@ class WsClientConnection(object):
             self.request, compression_options={},
             ping_interval=5, ping_timeout=15)
         state = await self.context.add_outgoing_connection(
-            self.cxn_id, self, auth_context=self._auth_context, other_url=self.url)
+            self.cxn_id, self, auth_context=self._auth_context,
+            other_url=self.url)
         asyncio.create_task(self._run())
         self._is_connected.set()
         self._state = state
@@ -133,10 +134,11 @@ class WsServerHandler(websocket.WebSocketHandler):
             )
 
         self.cxn_id = generate_connection_id()
-        self._state = await self.context.add_incoming_connection(self.cxn_id, self, other_url=url)
-        logger.info("Client CXN (ID: %s) received from: %s", self.cxn_id, self._state.other_url)
+        self._state = await self.context.add_incoming_connection(
+            self.cxn_id, self, other_url=url)
+        logger.info("Client CXN (ID: %s) received from: %s", self.cxn_id,
+                    self._state.other_url)
         logger.info("Received at URL: %s", self.request.full_url())
-        
 
     def on_close(self):
         try:
@@ -160,11 +162,11 @@ class WsContext(object):
     def __init__(self, json_route_mapping, other_parsers=None, debug=0):
         """Create a WsContext with the given JSON routes, and optional opcode parsers.
 
-        JSON is always a parser for any WsContext and the routes are passed via:
+        JSON is a parser for any WsContext and the routes are passed via:
             `json_route_mapping`
-        Other types of messages are also possible, and are registered by creating a
-        'parser' class and adding it to the `opcode_mapping` dict with the single-byte
-        opcode: <opcode> -> Custom Parser
+        Other types of messages are also possible, and are registered by
+        creating a 'parser' class and adding it to the `opcode_mapping` dict
+        with the single-byte opcode: <opcode> -> Custom Parser
         """
         # Store any custom opcode mappings here.
         # By default, this will assume JSON messages, which are implicitly
@@ -176,7 +178,7 @@ class WsContext(object):
             for parser in other_parsers
         }
         if JsonParser.opcode in self.opcode_mapping:
-            msg = "Opcode {} (the '{{' character) conflicts with JSON requests!".format(
+            msg = "Opcode {} ('{{') conflicts with JSON requests!".format(
                 JsonParser.opcode)
             raise Exception(msg)
         self.opcode_mapping[JsonParser.opcode] = JsonParser(json_route_mapping)
@@ -193,7 +195,8 @@ class WsContext(object):
         # Store the debug level.
         self._debug = debug
 
-    async def add_incoming_connection(self, cxn_id, cxn, auth_context=None, other_url=None):
+    async def add_incoming_connection(
+            self, cxn_id, cxn, auth_context=None, other_url=None):
         """Create the new connection and add it.
 
         Returns the WebsocketState for this connection.
@@ -203,7 +206,8 @@ class WsContext(object):
             auth_context = AuthManager()
 
         # Create the WebsocketState
-        state = WebsocketState(self, cxn, auth_context, other_url=other_url, prefix='I')
+        state = WebsocketState(
+            self, cxn, auth_context, other_url=other_url, prefix='I')
         async with self._cond:
             self._cxn_mapping[cxn_id] = state
             self._cond.notify_all()
@@ -216,11 +220,13 @@ class WsContext(object):
         if state:
             await state.close()
 
-    async def add_outgoing_connection(self, cxn_id, cxn, auth_context=None, other_url=None):
+    async def add_outgoing_connection(
+            self, cxn_id, cxn, auth_context=None, other_url=None):
         if auth_context is None:
             auth_context = AuthManager()
 
-        state = WebsocketState(self, cxn, auth_context, other_url=other_url, prefix='O')
+        state = WebsocketState(
+            self, cxn, auth_context, other_url=other_url, prefix='O')
         async with self._cond:
             self._cxn_mapping[cxn_id] = state
         return state
@@ -321,7 +327,7 @@ class WebsocketState(object):
     def get_next_id(self):
         self._next_id += 1
         return u"{}{}".format(self._prefix, self._next_id)
-    
+
     def get_info(self):
         return {
             "url": self.other_url
@@ -335,13 +341,13 @@ class WebsocketState(object):
         try:
             if isinstance(msg, dict):
                 msg = json.dumps(msg)
-            # HACK FOR NOW: 'cxn.write_message()' typically only supports inputs of
-            # type: bytes, str, dict. Curiously, memoryview and bytearray are omitted.
-            # So, cast it here explicitly, at the expense (possibly) of another copy
-            # operation.
+            # HACK FOR NOW: 'cxn.write_message()' typically only supports
+            # inputs of type: bytes, str, dict. Curiously, memoryview and
+            # bytearray are omitted. So, cast it here explicitly, at the
+            # expense (possibly) of another copy operation.
             elif isinstance(msg, (bytearray, memoryview)):
-                # Binary MUST be true if the data is passed as such. If this case
-                # is detected, force it True regardless of above.
+                # Binary MUST be true if the data is passed as such. If this
+                # case is detected, force it True regardless of above.
                 msg = bytes(msg)
                 binary = True
 
@@ -349,17 +355,19 @@ class WebsocketState(object):
             if cxn:
                 await cxn.write_message(msg, binary=binary)
         except websocket.WebSocketClosedError:
-            logger.debug("Cxn ID %s: Dropping 'write' to closed websocket!", self.cxn_id)
+            logger.debug("Cxn ID %s: Dropping 'write' to closed websocket!",
+                         self.cxn_id)
         except Exception:
-            logger.exception("Unexpected exception writing to cxn_id: %s", self.cxn_id)
-    
+            logger.exception("Unexpected exception writing to cxn_id: %s",
+                             self.cxn_id)
+
     async def on_message(self, message):
         # Parse the message according to the context route handling.
         if not message:
             return
 
-        # Parse the protocol here by parsing the first byte. If the first byte is
-        # NOT of type: 'bytes', encode it via UTF8.
+        # Parse the protocol here by parsing the first byte. If the first byte
+        # is NOT of type: 'bytes', encode it via UTF8.
         if isinstance(message, str):
             opcode = ord(message[0].encode('utf8'))
         else:
@@ -369,13 +377,14 @@ class WebsocketState(object):
 
         parser = self.context.opcode_mapping.get(opcode)
         if not parser:
-            logger.warning("For Connection (ID: %s): Opcode '%s' is not supported!",
-                           self.cxn_id, opcode)
+            logger.warning(
+                "For Connection (ID: %s): Opcode '%s' is not supported!",
+                self.cxn_id, opcode)
             return
         try:
             # Each parser must accept two arguments:
-            # 1. The WebsocketState object (with the connection/context to write
-            #    messages to and store any state.
+            # 1. The WebsocketState object (with the connection/context to
+            #    write messages to and store any state.
             # 2. The (whole) message to process.
             #
             # The parser should also handle any exceptions internally; if some
@@ -400,7 +409,7 @@ class Endpoint(object):
     def __init__(self, state, msg_id):
         self.msg_id = msg_id
         self.state = state
-    
+
     async def next(self, msg):
         await self.state.write_message(dict(
             id=self.msg_id, status="next", message=msg
