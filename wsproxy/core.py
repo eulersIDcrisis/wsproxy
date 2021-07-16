@@ -30,7 +30,7 @@ def generate_connection_id():
 class WsClientConnection(object):
     """Handle an outgoing connection to some server."""
 
-    def __init__(self, context, url_or_request, auth_manager=None):
+    def __init__(self, context, url_or_request, auth_context=None):
         self.cxn_id = generate_connection_id()
 
         if isinstance(url_or_request, str):
@@ -45,7 +45,7 @@ class WsClientConnection(object):
 
         self.context = context
         self._is_connected = asyncio.Event()
-        self._auth_manager = auth_manager
+        self._auth_context = auth_context
 
     @property
     def is_connected(self):
@@ -64,7 +64,7 @@ class WsClientConnection(object):
             self.request, compression_options={},
             ping_interval=5, ping_timeout=15)
         state = await self.context.add_outgoing_connection(
-            self.cxn_id, self, auth_manager=self._auth_manager, other_url=self.url)
+            self.cxn_id, self, auth_context=self._auth_context, other_url=self.url)
         asyncio.create_task(self._run())
         self._is_connected.set()
         self._state = state
@@ -193,17 +193,17 @@ class WsContext(object):
         # Store the debug level.
         self._debug = debug
 
-    async def add_incoming_connection(self, cxn_id, cxn, auth_manager=None, other_url=None):
+    async def add_incoming_connection(self, cxn_id, cxn, auth_context=None, other_url=None):
         """Create the new connection and add it.
 
         Returns the WebsocketState for this connection.
         """
         # Create the Auth manager for this connection.
-        if auth_manager is None:
-            auth_manager = AuthManager()
+        if auth_context is None:
+            auth_context = AuthManager()
 
         # Create the WebsocketState
-        state = WebsocketState(self, cxn, auth_manager, other_url=other_url, prefix='I')
+        state = WebsocketState(self, cxn, auth_context, other_url=other_url, prefix='I')
         async with self._cond:
             self._cxn_mapping[cxn_id] = state
             self._cond.notify_all()
@@ -216,11 +216,11 @@ class WsContext(object):
         if state:
             await state.close()
 
-    async def add_outgoing_connection(self, cxn_id, cxn, auth_manager=None, other_url=None):
-        if auth_manager is None:
-            auth_manager = AuthManager()
+    async def add_outgoing_connection(self, cxn_id, cxn, auth_context=None, other_url=None):
+        if auth_context is None:
+            auth_context = AuthManager()
 
-        state = WebsocketState(self, cxn, auth_manager, other_url=other_url, prefix='O')
+        state = WebsocketState(self, cxn, auth_context, other_url=other_url, prefix='O')
         async with self._cond:
             self._cxn_mapping[cxn_id] = state
         return state
@@ -255,18 +255,18 @@ class WebsocketState(object):
     with some message ID.
     """
 
-    def __init__(self, context, connection, auth_manager, other_url=None, prefix='N'):
+    def __init__(self, context, connection, auth_context, other_url=None, prefix='N'):
         self._context = weakref.ref(context)
         self._connection = connection
-        self._auth_manager = auth_manager
+        self._auth_context = auth_context
         self._other_url = other_url
         self._prefix = prefix
         self._next_id = 0
-        
+
         # Outgoing messages that are initiated locally. Stored as a map of:
         # msg_id -> handler(res) callbacks.
         self._out_mapping = dict()
-        
+
         # Store a mapping of sockets that are being proxied/forwarded.
         self._socket_mapping = dict()
 
@@ -283,8 +283,8 @@ class WebsocketState(object):
         return None
 
     @property
-    def auth_manager(self):
-        return self._auth_manager
+    def auth_context(self):
+        return self._auth_context
 
     @property
     def debug(self):
@@ -299,7 +299,7 @@ class WebsocketState(object):
     def socket_mapping(self):
         """Return the mapping of sockets this context is currently forwarding."""
         return self._socket_mapping
-    
+
     @property
     def other_url(self):
         if not self._other_url:

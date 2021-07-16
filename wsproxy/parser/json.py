@@ -98,7 +98,7 @@ class Endpoint(object):
 
 class JsonParser(object):
     """Basic Parser for JSON-style routes.
-    
+
     To make development easier (and consistent with RxJS), the following types
     of routes are supported, followed by possible responses (all states will
     return an error code, if that is more applicable):
@@ -110,11 +110,11 @@ class JsonParser(object):
             subscription has no further updates.
      - unsubscribe: Request to unsubscribe from an existing subscription.
 
-    After the relevant fields are parsed from the JSON, this will call the handler
-    with the given arguments:
+    After the relevant fields are parsed from the JSON, this will call the
+    handler with the given arguments:
     """
     # A single-byte character to identify JSON routes. Here, the opcode
-    # is clearly the first character of a JSON object. 
+    # is clearly the first character of a JSON object.
     opcode = ord('{')
 
     def __init__(self, route_list):
@@ -137,28 +137,31 @@ class JsonParser(object):
         if state.debug > 0:
             logger.debug("%s JSON recv: %s", state.cxn_id, res)
 
-        # Parse the msg_id, required for all messages. If not included, just drop
-        # the message.
+        # Parse the msg_id, required for all messages. If not included, just
+        # drop the message.
         try:
             msg_id = res['id']
         except KeyError as exc:
             if state.debug > 0:
-                logger.debug("Drop message with missing field '%s': %s", exc, res)
+                logger.debug("Drop message with missing field '%s': %s",
+                             exc, res)
             return
         try:
-            # If this is the response from some outgoing message, this should have
-            # an explicit 'status' field, set to one of: 'next', 'complete', 'error'.
-            # If it is 'None', then this cannot be the response from an outgoing
-            # message.
+            # If this is the response from some outgoing message, this should
+            # have an explicit 'status' field, set to one of: 'next',
+            # 'complete', 'error'.
+            # If it is 'None', then this cannot be the response from an
+            # outgoing message.
             status = res.get('status')
             if status:
                 handler = state.msg_mapping.get(msg_id)
                 if handler:
                     await handler(res)
                     return
-                # Otherwise, this message is malformed. Just drop it, with an optional
-                # warning.
-                logger.warning("Dropping received message. ID: %s Status: %s", msg_id, status)
+                # Otherwise, this message is malformed. Just drop it, with an
+                # optional warning.
+                logger.warning("Dropping received message. ID: %s Status: %s",
+                               msg_id, status)
                 return
         except Exception:
             logger.exception("Error handling received message!")
@@ -166,8 +169,8 @@ class JsonParser(object):
 
         # Parse the message type.
         try:
-            # Otherwise, assume that this is an incoming message that should now be
-            # initiated. Determine the type and route appropriately.
+            # Otherwise, assume that this is an incoming message that should
+            # now be initiated. Determine the type and route appropriately.
             msg_type_str = res['type']
             msg_type = RouteType(msg_type_str)
         except Exception:
@@ -175,44 +178,52 @@ class JsonParser(object):
                 status="error", message="Missing or invalid field: 'type'"
             ))
             return
-    
+
         try:
-            # First, check if the message type is of `UNSUB`, which basically means
-            # to close the handler (if applicable), then remove it from the list.
+            # First, check if the message type is of `UNSUB`, which basically
+            # means to close the handler (if applicable), then remove it from
+            # the list.
             #
-            # IMPORTANT: By cancelling the asyncio task, it will not execute. This
-            # means that we need to manually send the 'complete' message here.
+            # IMPORTANT: By cancelling the asyncio task, it will not execute.
+            # This means that we need to manually send the 'complete' message.
             if msg_type == RouteType.UNSUB:
                 try:
                     # Cancel this sub, if applicable.
                     sub, endpoint = state.msg_mapping.pop(msg_id, (None, None))
                     if sub:
                         sub.cancel()
-                        # NOTE: This no-ops if the handler already sent the 'complete'
-                        # message; this check is necessary because it is possible to
-                        # cancel the handler before it is even scheduled to run, in
-                        # which case we should still respond with a 'complete'.
+                        # NOTE: This no-ops if the handler already sent the
+                        # 'complete' message; this check is necessary because
+                        # it is possible to cancel the handler before it is
+                        # even scheduled to run, in which case we should still
+                        # respond with a 'complete'.
                         await endpoint.complete()
                 except Exception:
-                    logger.exception("Unexpected exception processing msg_id: %s", msg_id)
+                    logger.exception(
+                        "Unexpected exception processing msg_id: %s", msg_id)
                 # Done processing this message.
                 return
 
-            # For the other route types, there will be a "route" and optional "args" field.
+            # For the other route types, there will be a "route" and optional
+            # "args" field.
             route = res['route']
             args = res.get('args')
 
             if state.msg_mapping.get(msg_id):
-                raise Exception("Existing handler already exists with Msg ID: {}".format(msg_id))
+                raise Exception(
+                    "Existing handler already exists with Msg ID: %s",
+                    msg_id)
 
             handler = self.route_mapping[route]
-            endpoint = Endpoint(state, msg_id, complete_on_next=bool(msg_type != RouteType.SUB))
+            endpoint = Endpoint(
+                state, msg_id,
+                complete_on_next=bool(msg_type != RouteType.SUB))
             sub = asyncio.create_task(handler(endpoint, args))
             # sub = asyncio.create_task(handler(state, msg_id, msg_type, args))
             state.msg_mapping[msg_id] = (sub, endpoint)
 
             # Will raise a not authorized exception if invalid.
-            state.auth_manager.check_json_route(route, res.get('auth'))
+            state.auth_context.check_json_route(route, res.get('auth'))
 
             return
         except websocket.WebSocketClosedError:
@@ -248,7 +259,7 @@ class BaseRequest(object):
     async def __aenter__(self):
         await self.open()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, tb):
         await self.close()
 
@@ -292,13 +303,13 @@ async def once(state, route, args=None):
 
     Returns a Future that resolves with the results, or raises if the
     result was an error.
-    
+
     A 'once' request should respond with either:
      - 'next' -> 'complete'
      - 'error' -> 'complete'
     """
     request = BaseRequest(state, RouteType.ONCE, route, args)
-    async with request:        
+    async with request:
         res = None
         try:
             res = await request.receive()
