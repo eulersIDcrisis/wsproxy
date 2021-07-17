@@ -14,8 +14,9 @@ from functools import wraps
 from enum import Enum
 from functools import partial
 from tornado import tcpserver, tcpclient, websocket, ioloop, httpclient
-from wsproxy.auth_manager import AuthManager
+# from wsproxy.auth_manager import AuthManager
 from wsproxy.util import main_logger as logger
+from wsproxy.authentication.manager import AuthManager
 from wsproxy.parser.json import JsonParser
 from wsproxy.parser.proxy import RawProxyParser
 
@@ -159,7 +160,8 @@ class WsServerHandler(websocket.WebSocketHandler):
 class WsContext(object):
     """Context that stores the current connections for the app."""
 
-    def __init__(self, json_route_mapping, other_parsers=None, debug=0):
+    def __init__(self, auth_manager, json_route_mapping, other_parsers=None,
+                 debug=0):
         """Create a WsContext with the given JSON routes, and optional opcode parsers.
 
         JSON is a parser for any WsContext and the routes are passed via:
@@ -195,6 +197,14 @@ class WsContext(object):
         # Store the debug level.
         self._debug = debug
 
+        # Store the auth manager here.
+        self._auth_manager = auth_manager
+
+    @property
+    def auth_manager(self):
+        """Return the AuthManager for this websocket."""
+        return self._auth_manager
+
     async def add_incoming_connection(
             self, cxn_id, cxn, auth_context=None, other_url=None):
         """Create the new connection and add it.
@@ -203,7 +213,7 @@ class WsContext(object):
         """
         # Create the Auth manager for this connection.
         if auth_context is None:
-            auth_context = AuthManager()
+            auth_context = self.auth_manager.get_default_auth_context()
 
         # Create the WebsocketState
         state = WebsocketState(
@@ -223,7 +233,7 @@ class WsContext(object):
     async def add_outgoing_connection(
             self, cxn_id, cxn, auth_context=None, other_url=None):
         if auth_context is None:
-            auth_context = AuthManager()
+            auth_context = self.auth_manager.get_default_auth_context()
 
         state = WebsocketState(
             self, cxn, auth_context, other_url=other_url, prefix='O')
@@ -243,6 +253,7 @@ class WsContext(object):
 
     @property
     def debug(self):
+        """Return the general debug level for this context."""
         return self._debug
 
     async def wait_for_connection_change(self):

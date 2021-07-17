@@ -17,7 +17,7 @@ class NotAuthorized(Exception):
     """Exception indicating that access is not authorized."""
 
 
-class AuthContext(metaclass=abc.ABCMeta):
+class AuthContext(metaclass=ABCMeta):
     """Class that stores auth details for some connection.
 
     This class has the following methods:
@@ -28,7 +28,7 @@ class AuthContext(metaclass=abc.ABCMeta):
     valid; the arguments passed are the name of the route and some field.
     """
 
-	@abstractmethod
+    @abstractmethod
     def check_proxy_request(self, host, port, protocol):
         return True
 
@@ -51,5 +51,5 @@ class AllAccessAuthContext(AuthContext):
     def check_proxy_request(self, host, port, protocol):
         return True
 
-    def check_proxy_request(self, host, port, protocol):
+    def check_json_route(self, route, auth_field):
         return True

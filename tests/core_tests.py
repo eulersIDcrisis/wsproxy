@@ -6,7 +6,7 @@ import unittest
 import logging
 from tornado import ioloop, web, websocket, testing
 # Local imports
-from wsproxy.auth_manager import AuthManager
+from wsproxy.authentication.manager import AuthManager
 from wsproxy.core import (
     WsContext, WebsocketState, WsServerHandler, WsClientConnection
 )
@@ -18,9 +18,10 @@ from tests import debug_util
 class WebsocketServerTest(testing.AsyncHTTPTestCase):
 
     def get_app(self):
+        manager = AuthManager()
         routes = info_routes.get_routes()
-        self.context = WsContext(routes, debug=debug_util.get_unittest_debug())
-        self.client_context = WsContext([], debug=debug_util.get_unittest_debug())
+        self.context = WsContext(manager, routes, debug=debug_util.get_unittest_debug())
+        self.client_context = WsContext(manager, [], debug=debug_util.get_unittest_debug())
 
         return web.Application([
             (r'/', WsServerHandler, dict(context=self.context)),

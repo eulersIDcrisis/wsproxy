@@ -96,6 +96,8 @@ def get_routes():
         Route(RouteType.ONCE, "echo", echo, 'test'),
         Route(RouteType.SUB, "count", count_subscription, 'test'),
         Route(RouteType.SUB, "info", info_subscription, 'system-inspect'),
+        Route(RouteType.SUB, "garbage_collect", garbage_collect_post,
+              'system-inspect'),
         Route(RouteType.SUB, "connection_info", connection_info_subscription,
               'system-inspect'),
     ]
