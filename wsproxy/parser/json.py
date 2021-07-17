@@ -223,7 +223,7 @@ class JsonParser(object):
             state.msg_mapping[msg_id] = (sub, endpoint)
 
             # Will raise a not authorized exception if invalid.
-            state.auth_context.check_json_route(route, res.get('auth'))
+            state.auth_context.check_json_route(route)
 
             return
         except websocket.WebSocketClosedError:

@@ -33,7 +33,7 @@ class AuthContext(metaclass=ABCMeta):
         return True
 
     @abstractmethod
-    def check_json_route(self, route, auth_field):
+    def check_json_route(self, route):
         return True
 
 
@@ -42,7 +42,7 @@ class NoAccessAuthContext(AuthContext):
     def check_proxy_request(self, host, port, protocol):
         raise NotAuthorized('Request not authorized.')
 
-    def check_json_route(self, route, auth_field):
+    def check_json_route(self, route):
         raise NotAuthorized('Request not authorized.')
 
 
@@ -51,5 +51,5 @@ class AllAccessAuthContext(AuthContext):
     def check_proxy_request(self, host, port, protocol):
         return True
 
-    def check_json_route(self, route, auth_field):
+    def check_json_route(self, route):
         return True
