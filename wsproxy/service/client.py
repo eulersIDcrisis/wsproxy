@@ -16,7 +16,7 @@ from wsproxy import (
 from wsproxy.routes import (
     socks5, info, tunnel
 )
-
+from wsproxy.authentication.context import AllAccessAuthContext
 
 logger = util.get_child_logger('client')
 
@@ -45,7 +45,7 @@ class WsproxyClientService(util.IOLoopContext):
         self.server_url = server_request.url
         self._is_connected = asyncio.Event()
         self.ioloop.add_callback(self.run_main_loop)
-        
+
         routes = info.get_routes()
         routes.extend(tunnel.get_routes())
         self.context = core.WsContext(routes, debug=debug)
@@ -53,11 +53,12 @@ class WsproxyClientService(util.IOLoopContext):
         self._on_connect_handlers = []
 
     def register_on_connect_handler(self, handler):
-        # 'handler' should be a coroutine that accepts "WebsocketState" as an argument.
+        # 'handler' should be a coroutine that accepts "WebsocketState" as an
+        # argument.
         self._on_connect_handlers.append(handler)
 
-    def set_auth_manager(self, auth_manager):
-        self._manager = auth_manager
+    def set_auth_context(self, auth_context):
+        self._auth_context = auth_context
 
     @property
     def is_connected_event(self):
@@ -101,7 +102,8 @@ class WsproxyClientService(util.IOLoopContext):
             socks_server = socks5.ProxySocks5Server(10000, state)
             try:
                 socks_server.setup()
-                logger.info("Setting up SOCKSv5 proxy on port: %s", socks_server.port)
+                logger.info("Setting up SOCKSv5 proxy on port: %s",
+                            socks_server.port)
                 while True:
                     await asyncio.sleep(10.0)
             finally:
@@ -118,12 +120,16 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Connect to an endpoint.')
     # Logging and other 'global' options.
-    parser.add_argument('-v', '--verbose', action='count', help=(
-        "Enable verbose (logging) output. Passing multiple times increases verbosity."))
-    parser.add_argument('-q', '--no-stderr-log', action='store_false', dest='stderr_log',
-        help=("Disable logging to stderr. This does not affect verbosity or other "
-              "settings."))
-    parser.add_argument('--log-file', type=str, default=None, dest='log_file',
+    parser.add_argument(
+        '-v', '--verbose', action='count', help=(
+            "Enable verbose (logging) output. Passing multiple times "
+            "increases verbosity."))
+    parser.add_argument(
+        '-q', '--no-stderr-log', action='store_false', dest='stderr_log',
+        help=("Disable logging to stderr. This does not affect verbosity or "
+              "other settings."))
+    parser.add_argument(
+        '--log-file', type=str, default=None, dest='log_file',
         help="Write log to file (in addition to stderr, if configured).")
     parser.add_argument(
         'server_url', help="Proxy server URL to connect to.")
@@ -135,11 +141,19 @@ def main():
         help=("Do not verify the hostname for the certificate. Useful for "
               "running with a trusted certificate, but no DNS record."))
     parser.add_argument(
-        '--socks5', type=int, help=("Setup socks5 proxy on the given port that "
-                                    "tunnels through the server."))
+        '--username', type=str, default=None,
+        help="Username to authenticate with the server.")
     parser.add_argument(
-        '-L', '--tunnel-port', dest='local_port', type=int,
-        help="Permit server to make requests to this local port (i.e. -L in SSH).")
+        '--password', type=str, default=None,
+        help="Password to authenticate with the server.")
+    parser.add_argument(
+        '--socks5', type=int,
+        help=("Setup socks5 proxy on the given port that tunnels through "
+              "the server."))
+    parser.add_argument(
+        '-L', '--tunnel-port', dest='local_port', type=int, help=(
+            "Permit server to make requests to this local port (i.e. -L "
+            "in SSH)."))
 
     # Parse the arguments.
     args = parser.parse_args()
@@ -162,18 +176,16 @@ def main():
     service = create_client_service(
         url, cert_path=cert_path, verify_host=verify_host, debug=debug)
 
-    if args.local_port:
-        auth_manager = auth.PortTunnelAuthManager(args.local_port)
-        service.set_auth_manager(auth_manager)
-
+    # NOTE: Since this is the client connecting to the server, we can
+    # permit all access once the server accepts the permission here.
+    context = AllAccessAuthContext()
+    service.set_auth_context(context)
     if args.socks5:
         service.register_socks5_server(args.socks5)
-
     try:
         service.run_ioloop()
     except Exception:
         util.main_logger.exception("Error running Client service!")
-
 
 
 if __name__ == '__main__':
