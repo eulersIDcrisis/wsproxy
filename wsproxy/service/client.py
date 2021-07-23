@@ -16,11 +16,12 @@ from wsproxy import (
 from wsproxy.routes import (
     socks5, info, tunnel
 )
-from wsproxy.authentication.context import AllAccessAuthContext
+from wsproxy.authentication.manager import AuthManager
+
 
 logger = util.get_child_logger('client')
 
-def create_client_service(url, cert_path=None, verify_host=True, debug=0):
+def create_client_service(url, auth_manager, cert_path=None, verify_host=True, debug=0):
 
     if cert_path:
         import ssl
@@ -34,12 +35,13 @@ def create_client_service(url, cert_path=None, verify_host=True, debug=0):
 
     request = httpclient.HTTPRequest(
         url, ssl_options=context)
-    return WsproxyClientService(request, debug=debug)
+
+    return WsproxyClientService(request, auth_manager, debug=debug)
 
 
 class WsproxyClientService(util.IOLoopContext):
 
-    def __init__(self, server_request, debug=0):
+    def __init__(self, server_request, auth_manager, debug=0):
         super(WsproxyClientService, self).__init__()
         self.request = server_request
         self.server_url = server_request.url
@@ -48,7 +50,7 @@ class WsproxyClientService(util.IOLoopContext):
 
         routes = info.get_routes()
         routes.extend(tunnel.get_routes())
-        self.context = core.WsContext(routes, debug=debug)
+        self.context = core.WsContext(auth_manager, routes, debug=debug)
 
         self._on_connect_handlers = []
 
@@ -56,9 +58,6 @@ class WsproxyClientService(util.IOLoopContext):
         # 'handler' should be a coroutine that accepts "WebsocketState" as an
         # argument.
         self._on_connect_handlers.append(handler)
-
-    def set_auth_context(self, auth_context):
-        self._auth_context = auth_context
 
     @property
     def is_connected_event(self):
@@ -83,7 +82,8 @@ class WsproxyClientService(util.IOLoopContext):
             try:
                 state = await cxn.open()
             except Exception as exc:
-                logger.warning("Could not connect %s -- Reason: %s", self.server_url, str(exc))
+                logger.warning("Could not connect %s -- Reason: %s", 
+                               self.server_url, str(exc))
                 return
             self._is_connected.set()
 
@@ -173,13 +173,14 @@ def main():
     cert_path = getattr(args, 'cert_path', None)
     verify_host = getattr(args, 'verify_host', True)
 
+    auth_manager = AuthManager()
+
     service = create_client_service(
-        url, cert_path=cert_path, verify_host=verify_host, debug=debug)
+        url, auth_manager, cert_path=cert_path,
+        verify_host=verify_host, debug=debug)
 
     # NOTE: Since this is the client connecting to the server, we can
     # permit all access once the server accepts the permission here.
-    context = AllAccessAuthContext()
-    service.set_auth_context(context)
     if args.socks5:
         service.register_socks5_server(args.socks5)
     try:

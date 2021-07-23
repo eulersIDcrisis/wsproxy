@@ -22,10 +22,10 @@ class AuthManager(object):
     """
 
     def get_auth_context(self, auth_text):
-        return NoAccessAuthContext()
+        return AllAccessAuthContext()
 
     def get_default_auth_context(self):
-        return NoAccessAuthContext()
+        return AllAccessAuthContext()
 
 
 class BasicPasswordAuthManager(AuthManager):

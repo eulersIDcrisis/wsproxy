@@ -43,13 +43,17 @@ class NoAccessAuthContext(AuthContext):
         raise NotAuthorized('Request not authorized.')
 
     def check_json_route(self, route):
+        if route == 'proxy_socket_monitor':
+            return True
         raise NotAuthorized('Request not authorized.')
 
 
 class AllAccessAuthContext(AuthContext):
 
     def check_proxy_request(self, host, port, protocol):
+        print("{} {} {}".format(protocol, host, port))
         return True
 
     def check_json_route(self, route):
+        print(route)
         return True

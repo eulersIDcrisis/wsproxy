@@ -13,6 +13,7 @@ from tornado import web, httpserver, netutil
 from wsproxy import (
     util, core
 )
+from wsproxy.authentication.manager import AuthManager
 from wsproxy.routes import (
     socks5, info, tunnel
 )
@@ -20,14 +21,6 @@ from wsproxy.routes import (
 
 # Bring the logger into scope here.
 logger = util.get_child_logger('server')
-
-
-def get_context(debug=0):
-    routes = info.get_routes()
-    routes.extend(tunnel.get_routes())
-    routes.extend(socks5.get_routes())
-
-    return core.WsContext(routes, debug=debug)
 
 
 class LoginHandler(web.RequestHandler):
@@ -112,13 +105,21 @@ class ClientPortHandler(WsproxyBaseHandler):
             await self.finish()
 
 
+def get_context(auth_manager, debug=0):
+    routes = info.get_routes()
+    routes.extend(tunnel.get_routes())
+    routes.extend(socks5.get_routes())
+
+    return core.WsContext(auth_manager, routes, debug=debug)
+
+
 class WsproxyService(util.IOLoopContext):
 
-    def __init__(self, debug=0):
+    def __init__(self, context):
         super().__init__()
-        
-        # Create the master context.
-        self.context = get_context(debug=debug)
+
+        # Assign the master context.
+        self.context = context
 
         routes = [
             (r'/api/login', LoginHandler),
@@ -180,22 +181,31 @@ def main():
 
     # Logging and other 'global' options.
     parser.add_argument('-v', '--verbose', action='count', help=(
-        "Enable verbose (logging) output. Passing multiple times increases verbosity."))
-    parser.add_argument('-q', '--no-stderr-log', action='store_false', dest='stderr_log',
-        help=("Disable logging to stderr. This does not affect verbosity or other "
-              "settings."))
-    parser.add_argument('--log-file', type=str, default=None, dest='log_file',
+        "Enable verbose (logging) output. Passing multiple times "
+        "increases verbosity."))
+    parser.add_argument(
+        '-q', '--no-stderr-log', action='store_false', dest='stderr_log',
+        help=("Disable logging to stderr. This does not affect verbosity or "
+              "other settings."))
+    parser.add_argument(
+        '--log-file', type=str, default=None, dest='log_file',
         help="Write log to file (in addition to stderr, if configured).")
 
     # Ports for the server.
     parser.add_argument('-p', '--port', type=int, default=8080)
-    parser.add_argument('--unix-socket', type=str, nargs='*', dest='unix_sockets')
+    parser.add_argument(
+        '--unix-socket', type=str, nargs='*', dest='unix_sockets')
 
     # Configure the certificate parameters, if passed.
     parser.add_argument(
         '--ssl-cert', dest='cert_path', default='', nargs=2, type=str,
         metavar=('CERT_FILE', 'KEY_FILE'),
         help="Path to cert file and key file to use when running with SSL.")
+
+    # Configure the authentication parameters.
+    parser.add_argument(
+        '--allow-all-access', dest='all_access', action='store_true',
+        help="WARNING: Allow all access without authentication.")
 
     # Parse the args and run the server.
     args = parser.parse_args()
@@ -221,9 +231,13 @@ def main():
         cert_path = None
         key_path = None
 
+    # Setup the server's context.
+    auth_manager = AuthManager()
+
     try:
+        context = get_context(auth_manager, debug=debug)
         util.main_logger.info("Running server on port: %s", port)
-        server = WsproxyService(debug=debug)
+        server = WsproxyService(context)
 
         if cert_path and key_path:
             server.bind_to_ssl_ports([port], cert_path, key_path)

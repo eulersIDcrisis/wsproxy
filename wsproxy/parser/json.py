@@ -7,7 +7,7 @@ import json
 import asyncio
 from enum import Enum
 from tornado import websocket
-from wsproxy.auth_manager import NotAuthorized
+from wsproxy.authentication.context import NotAuthorized
 from wsproxy.util import main_logger as logger
 
 
