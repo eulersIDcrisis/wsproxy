@@ -31,9 +31,9 @@ class RawProxyParser(object):
             # msg[0] is the opcode, which we'll ignore for now.
             # Parse out the UUID of the connection.
             socket_id = uuid.UUID(bytes=message[1:17])
-            if state.debug > 0:
-                logger.debug("%s RawProxy bytes received: %d", state.cxn_id, len(message))
             if state.debug > 1:
+                logger.debug("%s RawProxy bytes received: %d", state.cxn_id, len(message))
+            if state.debug > 2:
                 logger.debug("%s Raw RECV %s: %s", state.cxn_id, socket_id.hex, message[18:])
 
             handler = state.socket_mapping[socket_id]

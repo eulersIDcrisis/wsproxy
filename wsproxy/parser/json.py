@@ -134,7 +134,7 @@ class JsonParser(object):
         except Exception:
             logger.error("Bad Arguments: Could not parse JSON!")
             return
-        if state.debug > 0:
+        if state.debug > 1:
             logger.debug("%s JSON recv: %s", state.cxn_id, res)
 
         # Parse the msg_id, required for all messages. If not included, just

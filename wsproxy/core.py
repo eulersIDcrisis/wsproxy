@@ -29,9 +29,29 @@ def generate_connection_id():
 
 
 class WsClientConnection(object):
-    """Handle an outgoing connection to some server."""
+    """Handle an outgoing connection (i.e. from the client) to some server.
+
+    In order to better handle various authentication states, this will first
+    perform a simple (JSON) handshake with information (and potentially some
+    authentication credentials) with the server to establish what routes are
+    available. The process is TBD.
+    """
 
     def __init__(self, context, url_or_request, auth_context=None):
+        """Create a WsClientConnection object.
+
+        This object is responsible for managing the state of a connection to
+        some server. It should automatically handle retrying in the event of
+        a disconnect and some other common cases like this.
+
+        Parameters
+        ----------
+        context: WsContext
+            The websocket context with the routes and auth manager to use.
+        url_or_request: str or tornado.httpclient.HTTPRequest
+            The request information to use. If only a string is passed, then
+            the string is assumed to be the URL.
+        """
         self.cxn_id = generate_connection_id()
 
         if isinstance(url_or_request, str):
@@ -257,6 +277,7 @@ class WsContext(object):
         return self._debug
 
     async def wait_for_connection_change(self):
+        """Stall until the state of the current connections changes."""
         async with self._cond:
             await self._cond.wait()
 
@@ -307,14 +328,14 @@ class WebsocketState(object):
     def debug(self):
         """Return the debug level for this websocket.
 
-        NOTE: Debug is much slower, but will print received messages and so forth
-        to the logger and other sources as configured.
+        NOTE: Debug is much slower, but will print received messages and so
+        forth to the logger and other sources as configured.
         """
         return self.context.debug or 0
 
     @property
     def socket_mapping(self):
-        """Return the mapping of sockets this context is currently forwarding."""
+        """Return a mapping of sockets this context is currently forwarding."""
         return self._socket_mapping
 
     @property
@@ -347,7 +368,9 @@ class WebsocketState(object):
     async def write_message(self, msg, binary=False):
         if self.debug > 0:
             logger.debug("%s sending %s bytes.", self.cxn_id, len(msg))
-        if self.debug > 1:
+        if self.debug == 2 and isinstance(msg, dict):
+            logger.debug("%s JSON send: %s", self.cxn_id, msg)
+        if self.debug > 2:
             logger.debug("%s SEND: %s", self.cxn_id, msg)
         try:
             if isinstance(msg, dict):
@@ -373,6 +396,11 @@ class WebsocketState(object):
                              self.cxn_id)
 
     async def on_message(self, message):
+        """Process a received message on the websocket.
+
+        NOTE: This will delegate to the configured parser based on the first
+        character of the message.
+        """
         # Parse the message according to the context route handling.
         if not message:
             return
