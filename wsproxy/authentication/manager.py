@@ -22,6 +22,7 @@ class AuthManager(object):
     """
 
     def get_auth_context(self, auth_text):
+        print("AUTH CONTEXT INPUT: ", auth_text)
         return AllAccessAuthContext()
 
     def get_default_auth_context(self):
@@ -39,6 +40,7 @@ class BasicPasswordAuthManager(AuthManager):
         self.__password = password
 
     def get_auth_context(self, auth_text):
+        print("AUTH CONTEXT INPUT: ", auth_text)
         data = u'{}@{}'.format(self.__username, self.__password).encode('utf8')
         if data == base64.b64decode(auth_text):
             return AllAccessAuthContext()

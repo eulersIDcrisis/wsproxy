@@ -84,6 +84,11 @@ class WsClientConnection(object):
         self._cxn = await websocket.websocket_connect(
             self.request, compression_options={},
             ping_interval=5, ping_timeout=15)
+        # Read the first message from the connection to get the auth info.
+        msg = await self._cxn.read_message()
+        print(msg)
+        await self._cxn.write_message(json.dumps(dict(auth="")))
+
         state = await self.context.add_outgoing_connection(
             self.cxn_id, self, auth_context=self._auth_context,
             other_url=self.url)
@@ -121,15 +126,7 @@ class WsServerHandler(websocket.WebSocketHandler):
         self.client_ip = None
         self.client_port = None
         self.cxn_id = None
-
-    async def get(self, *args, **kwargs):
-        if not self.context.check_authentication(self):
-            # Close the connection, since the user is not authorized.
-            self.set_status(401)
-            self.write(dict(status=401, message="Not Authorized!"))
-            return
-        # Call the superclass coroutine, per normal.
-        await super(WsServerHandler, self).get(*args, **kwargs)
+        self._handshake_complete = False
 
     @property
     def context(self):
@@ -143,8 +140,48 @@ class WsServerHandler(websocket.WebSocketHandler):
     def url(self):
         return u'{}:{}'.format(self.client_ip, self.client_port)
 
+    def on_close(self):
+        try:
+            logger.info("Closing client CXN with ID: %s", self.cxn_id)
+            context = self.context
+            if context:
+                asyncio.create_task(context.remove_connection(self.cxn_id))
+        finally:
+            self._state = None
+
+    async def on_message(self, message):
+        print("MSG: ", message)
+        print("HANDSHAKE: ", self._handshake_complete)
+        if not self._handshake_complete:
+            try:
+                await self._open_client_response(message)
+                self._handshake_complete = True
+            except Exception:
+                logger.exception("ASDF")
+                # Close the connection, since something failed.
+                self.close()
+            return
+
+        # Otherwise, process the message as normal.
+        asyncio.create_task(self.state.on_message(message))
+
     async def open(self):
+        """Open the websocket handler."""
         # First, check if the authorization context permits the connection.
+        # Since it is the client that chose to connect to us, send a JWT
+        # token with the current state of this server. (If not configured,
+        # it is okay to send an empty response.)
+        await self.write_message(dict(auth=""))
+
+    async def _open_client_response(self, message):
+        auth_info = json.loads(message)
+        auth = auth_info.get('auth', '')
+
+        # Check the authentication of this request.
+        auth_context = self.context.auth_manager.get_auth_context(auth)
+
+        # At this point, the authentication context should be set. Continue
+        # with the rest of the handshake and start handling requests.
         if self.request.connection.stream is None:
             args = self.request.connection.context.address
             url = "{}:{}".format(*args)
@@ -156,22 +193,10 @@ class WsServerHandler(websocket.WebSocketHandler):
 
         self.cxn_id = generate_connection_id()
         self._state = await self.context.add_incoming_connection(
-            self.cxn_id, self, other_url=url)
+            self.cxn_id, self, auth_context=auth_context, other_url=url)
         logger.info("Client CXN (ID: %s) received from: %s", self.cxn_id,
                     self._state.other_url)
         logger.info("Received at URL: %s", self.request.full_url())
-
-    def on_close(self):
-        try:
-            logger.info("Closing client CXN with ID: %s", self.cxn_id)
-            context = self.context
-            if context:
-                asyncio.create_task(context.remove_connection(self.cxn_id))
-        finally:
-            self._state = None
-
-    async def on_message(self, message):
-        asyncio.create_task(self.state.on_message(message))
 
 
 #
@@ -280,9 +305,6 @@ class WsContext(object):
         """Stall until the state of the current connections changes."""
         async with self._cond:
             await self._cond.wait()
-
-    def check_authentication(self, req_handler):
-        return True
 
 
 class WebsocketState(object):
