@@ -17,14 +17,14 @@ from wsproxy.routes import (
     socks5, info, tunnel
 )
 from wsproxy.authentication.manager import (
-    AuthManager, BasicPasswordAuthManager
+    AuthManager, BasicPasswordAuthFactory
 )
 
 
 logger = util.get_child_logger('client')
 
 def create_client_service(
-        url, auth_manager, auth_callback=None, debug=0,
+        url, auth_manager, debug=0,
         cert_path=None, verify_host=True):
 
     if cert_path:
@@ -40,19 +40,16 @@ def create_client_service(
     request = httpclient.HTTPRequest(
         url, ssl_options=context)
 
-    return WsproxyClientService(
-        request, auth_manager, debug=debug, auth_callback=auth_callback)
+    return WsproxyClientService(request, auth_manager, debug=debug)
 
 
 class WsproxyClientService(util.IOLoopContext):
 
-    def __init__(self, server_request, auth_manager, auth_callback=None,
-                 debug=0):
+    def __init__(self, server_request, auth_manager, debug=0):
         super(WsproxyClientService, self).__init__()
         self.request = server_request
         self.server_url = server_request.url
         self._is_connected = asyncio.Event()
-        self._auth_callback = auth_callback
 
         self.ioloop.add_callback(self.run_main_loop)
 
@@ -86,8 +83,7 @@ class WsproxyClientService(util.IOLoopContext):
 
     async def _run_connection(self):
         try:
-            cxn = core.WsClientConnection(
-                self.context, self.request, auth_callback=self._auth_callback)
+            cxn = core.WsClientConnection(self.context, self.request)
             try:
                 state = await cxn.open()
             except Exception as exc:
@@ -183,15 +179,15 @@ def main():
     verify_host = getattr(args, 'verify_host', True)
 
     if args.username and args.password:
-        auth_callback = lambda _: BasicPasswordAuthManager.create_jwt(
-            args.username, args.password)
+        auth_manager = BasicPasswordAuthFactory(
+            args.username, args.password
+        ).create_auth_manager()
     else:
-        auth_callback = None
-    auth_manager = AuthManager()
+        auth_manager = AuthManager()
 
     service = create_client_service(
         url, auth_manager, cert_path=cert_path,
-        verify_host=verify_host, debug=debug, auth_callback=auth_callback)
+        verify_host=verify_host, debug=debug)
 
     # NOTE: Since this is the client connecting to the server, we can
     # permit all access once the server accepts the permission here.

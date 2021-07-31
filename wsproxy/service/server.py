@@ -236,10 +236,13 @@ def main():
 
     # Setup the server's context.
     if args.password:
-        auth_manager = auth_module.BasicPasswordAuthManager(
-            'admin', args.password)
+        auth_manager = auth_module.BasicPasswordAuthFactory(
+            'admin', args.password
+        ).create_auth_manager()
     elif args.all_access:
-        auth_manager = auth_module.AuthManager()
+        auth_manager = auth_module.AuthManager(
+            auth_module.AuthManager.get_all_access_context
+        )
     else:
         auth_manager = auth_module.AuthManager()
 

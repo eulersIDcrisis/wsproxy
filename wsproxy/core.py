@@ -37,7 +37,7 @@ class WsClientConnection(object):
     available. The process is TBD.
     """
 
-    def __init__(self, context, url_or_request, auth_callback=None):
+    def __init__(self, context, url_or_request):
         """Create a WsClientConnection object.
 
         This object is responsible for managing the state of a connection to
@@ -69,7 +69,6 @@ class WsClientConnection(object):
         self.context = context
         self._is_connected = asyncio.Event()
         self._auth_manager = self.context.auth_manager
-        self._auth_callback = auth_callback or (lambda _: '')
 
     @property
     def is_connected(self):
@@ -86,12 +85,17 @@ class WsClientConnection(object):
     async def open(self):
         self._cxn = await websocket.websocket_connect(
             self.request, compression_options={},
-            ping_interval=5, ping_timeout=15)
+            ping_interval=12, ping_timeout=60)
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
+        try:
+            msg_dict = json.loads(msg)
+            auth = msg_dict.get('auth', '')
+        except Exception:
+            auth = ''
         # Parse the auth context using the given string (usually a JWT).
-        auth_context = self._auth_manager.get_auth_context(msg)
-        auth_token = self._auth_callback(msg)
+        auth_context = self._auth_manager.get_auth_context(auth)
+        auth_token = self._auth_manager.generate_auth_jwt('')
         await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
 
         state = await self.context.add_outgoing_connection(
@@ -175,7 +179,7 @@ class WsServerHandler(websocket.WebSocketHandler):
         # token with the current state of this server. (If not configured,
         # it is okay to send an empty response.)
         try:
-            token = self.context.generate_current_auth_jwt('test')
+            token = self.context.auth_manager.generate_auth_jwt('test')
             await self.write_message(dict(auth=token))
         except Exception:
             logger.exception("Error trying to open connection! Closing...")
