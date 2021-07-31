@@ -6,7 +6,6 @@ import uuid
 import socket
 import struct
 import asyncio
-import argparse
 import ipaddress
 from contextlib import AsyncExitStack
 from tornado import ioloop, tcpserver, tcpclient, iostream, gen
@@ -30,11 +29,34 @@ ATYP_IPV6 = 0x04
 
 
 class Socks5Server(util.LocalTcpServer):
+    """Base TcpServer that handles SOCKSv5 proxies.
+
+    Subclasses should override to support custom proxying.
+    """
 
     def __init__(self, port):
+        """Create a basic SOCKSv5 server on the given port."""
         super(Socks5Server, self).__init__(port)
 
-    async def _handle_stream(self, local_stream, address):
+    async def handle_connection(self, local_stream, protocol, address, port):
+        """Handle a single connection opened to the server."""
+        client = tcpclient.TCPClient()
+        proxy_stream = await client.connect(str(address), port)
+        client_host, client_port = proxy_stream.socket.getsockname()
+
+        try:
+            await self._complete_socks5_handshake(
+                local_stream, client_host, client_port)
+
+            # Await the piped streams.
+            await asyncio.gather(
+                util.pipe_stream(local_stream, proxy_stream),
+                util.pipe_stream(proxy_stream, local_stream))
+        except iostream.StreamClosedError:
+            logger.debug("Closed stream")
+
+    async def _handle_stream(self, local_stream, addr):
+        """Handle reading the given stream with the given bind address."""
         # SOCKS 5 PROXY PROTOCOL
         #
         # (1) Client should send a buffer with:
@@ -45,7 +67,8 @@ class Socks5Server(util.LocalTcpServer):
         version, count = struct.unpack('!BB', res)
         if version != SOCKS5_VERSION:
             logger.warning(
-                "Closing stream for address %s: Only SOCKS 5 accepted.", address)
+                "Closing stream for address %s: Only SOCKS 5 accepted.",
+                addr)
             local_stream.close()
             return
         auth_methods = await local_stream.read_bytes(count)
@@ -53,7 +76,8 @@ class Socks5Server(util.LocalTcpServer):
         # Make sure this is included in the client's options.
         if 0x00 not in auth_methods:
             logger.warning(
-                "Closing stream for address %s: No supported auth options.", address)
+                "Closing stream for address %s: No supported auth options.",
+                addr)
             await local_stream.write(bytes([SOCKS5_VERSION, 0xFF]))
             return
         # Respond with 0x00 as the accepted authentication type.
@@ -75,7 +99,8 @@ class Socks5Server(util.LocalTcpServer):
             address = ipaddress.IPv6Address(buff)
             logger.debug("Parsed IPv6 address: %s", address)
         elif atyp == ATYP_DOMAIN:
-            # Read the next byte to determine the domain name length, the read that.
+            # Read the next byte to determine the domain name length,
+            # then read that.
             count = await local_stream.read_bytes(1)
             count = int.from_bytes(count, 'big', signed=False)
             buff = await local_stream.read_bytes(count)
@@ -94,9 +119,15 @@ class Socks5Server(util.LocalTcpServer):
         # request across to the other connection.
         await self.handle_connection(local_stream, 'tcp', str(address), port)
 
-    async def _complete_socks5_handshake(self, local_stream, client_host, client_port):
-        # Write this info out to the original stream, now that the connection is
-        # established. This is part of the SOCKS5 spec.
+    async def _complete_socks5_handshake(
+            self, local_stream, client_host, client_port):
+        """Complete the SOCKS5 handshake after reading the destination address.
+
+        Useful and necessary as a part of the protocol to confirm that the
+        connection is valid and ready to start processing data.
+        """
+        # Write this info out to the original stream, now that the connection
+        # is established. This is part of the SOCKS5 spec.
         data = struct.pack('!BBB', 0x05, 0x00, 0x00)
         await local_stream.write(data)
         # Write out the address too.
@@ -116,22 +147,6 @@ class Socks5Server(util.LocalTcpServer):
         msg = struct.pack('!H', client_port)
         await local_stream.write(msg)
 
-    # local_stream, 'tcp', str(address), port
-    async def handle_connection(self, local_stream, protocol, address, port):
-        client = tcpclient.TCPClient()
-        proxy_stream = await client.connect(str(address), port)
-        client_host, client_port = proxy_stream.socket.getsockname()
-
-        try:
-            await self._complete_socks5_handshake(local_stream, client_host, client_port)
-
-            # Await the piped streams.
-            await asyncio.gather(
-                util.pipe_stream(local_stream, proxy_stream),
-                util.pipe_stream(proxy_stream, local_stream))
-        except iostream.StreamClosedError:
-            logger.debug("Closed stream")
-
 
 class ProxySocks5Server(Socks5Server):
     """SOCKS5 Proxy server that sends data over the websocket.
@@ -140,33 +155,50 @@ class ProxySocks5Server(Socks5Server):
     """
 
     def __init__(self, port, endpoint):
+        """Create a SOCKS5 server that proxies across a websocket endpoint.
+
+        Parameters
+        ----------
+        port: int
+            The port to run the server on.
+        endpoint: WebsocketState
+            The websocket endpoint to send the proxied requests to.
+        """
         super(ProxySocks5Server, self).__init__(port)
         self.endpoint = endpoint
         self.socket_id = uuid.uuid1()
         self.pending_cxns = {}
 
     async def handle_connection(self, local_stream, protocol, address, port):
+        """Open a connection and proxy across this server's WS connection."""
         try:
             async with AsyncExitStack() as exit_stack:
                 exit_stack.callback(local_stream.close)
 
-                remote_socket = tunnel.ProxySocket(self.endpoint, local_stream, address, port)
+                remote_socket = tunnel.ProxySocket(
+                    self.endpoint, local_stream, address, port)
                 await remote_socket.open()
                 exit_stack.push_async_callback(remote_socket.close)
 
                 await self._complete_socks5_handshake(
-                    local_stream, remote_socket.bind_host, remote_socket.bind_port)
+                    local_stream, remote_socket.bind_host,
+                    remote_socket.bind_port)
                 await remote_socket.run()
         except (SubscriptionComplete, iostream.StreamClosedError):
             logger.debug("Closing proxy stream")
 
-
     def close(self):
+        """Close any pending connections and close the server."""
         for fut in self.pending_cxns.values():
             fut.cancel()
 
 
 async def socks5_proxy_subscription(endpoint, args):
+    """Basic subscription to run a local socks5 proxy on the server.
+
+    The websocket endpoint to proxy across can be set by passing in
+    the applicable `cxn_id` parameter.
+    """
     try:
         port = int(args['port'])
         cxn_id = args.get('cxn_id')
@@ -202,7 +234,8 @@ async def socks5_proxy_subscription(endpoint, args):
 def get_routes():
     """Return the routes that pertain to SOCKS5 proxies."""
     return [
-        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription, 'socks5_proxy')
+        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription,
+              'socks5_proxy'),
     ]
 
 
@@ -210,6 +243,8 @@ def get_routes():
 # Test app
 #
 def _run_main():
+    import argparse
+
     parser = argparse.ArgumentParser(description='Test SOCKS5 Proxy.')
     parser.add_argument('--port', dest='port', type=int, default=10000,
                         help="Set the port to run the Proxy server on.")
@@ -219,7 +254,7 @@ def _run_main():
     util.setup_default_logger()
     # logging.getLogger().setLevel(logging.DEBUG)
 
-    # Get the current IOLoop.    
+    # Get the current IOLoop.
     loop = ioloop.IOLoop.current()
 
     if args.proxy_url:

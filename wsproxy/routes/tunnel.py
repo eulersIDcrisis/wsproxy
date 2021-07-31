@@ -8,7 +8,7 @@ import asyncio
 from contextlib import AsyncExitStack, ExitStack
 from tornado import iostream, tcpclient
 from wsproxy import util
-from wsproxy.auth_manager import NotAuthorized
+from wsproxy.authentication.context import NotAuthorized
 from wsproxy.parser.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
 )
@@ -252,7 +252,7 @@ async def proxy_socket_subscription(endpoint, args):
         assert protocol.lower() == 'tcp'
 
         # Check the proxy request against the current auth manager.
-        endpoint.state.auth_manager.check_proxy_request(host, port, protocol)
+        endpoint.state.auth_context.check_proxy_request(host, port, protocol)
     except KeyError as ke:
         await endpoint.error(dict(message="Missing or Invalid field: {}".format(ke)))
         return
