@@ -10,8 +10,15 @@ Authentication works in this proxy as follows:
 There is one AuthContext per (websocket) connection, as well
 as for HTTP requests.
 """
-import base64
-from .context import AllAccessAuthContext, NoAccessAuthContext
+import datetime
+import jwt
+from wsproxy.util import get_child_logger
+from wsproxy.authentication.context import (
+    AllAccessAuthContext, NoAccessAuthContext
+)
+
+
+logger = get_child_logger('auth')
 
 
 class AuthManager(object):
@@ -22,10 +29,6 @@ class AuthManager(object):
     """
 
     def get_auth_context(self, auth_text):
-        print("AUTH CONTEXT INPUT: ", auth_text)
-        return AllAccessAuthContext()
-
-    def get_default_auth_context(self):
         return AllAccessAuthContext()
 
 
@@ -34,17 +37,39 @@ class BasicPasswordAuthManager(AuthManager):
 
     For now, this only supports an all-or-nothing authentication.
     """
+    DEFAULT_ALGORITHM = "HS256"
 
     def __init__(self, username, password):
         self.__username = username
         self.__password = password
 
     def get_auth_context(self, auth_text):
-        print("AUTH CONTEXT INPUT: ", auth_text)
-        data = u'{}@{}'.format(self.__username, self.__password).encode('utf8')
-        if data == base64.b64decode(auth_text):
-            return AllAccessAuthContext()
-        return self.get_default_auth_context()
+        try:
+            print("DECODE: ", auth_text)
+            # Decode the given data as a JWT that is signed with the password.
+            jwt_dict = jwt.decode(auth_text, self.__password, algorithms=[
+                BasicPasswordAuthManager.DEFAULT_ALGORITHM
+            ])
+            # Check the subject of the JWT.
+            if jwt_dict.get('sub') != self.__username:
+                raise ValueError("Invalid subject for JWT.")
 
-    def get_default_auth_context(self):
+            # TODO -- Check that the time range of this JWT is within bounds.
+
+            return AllAccessAuthContext()
+        except Exception as exc:
+            logger.error("Invalid authentication: %s", exc)
         return NoAccessAuthContext()
+
+    @staticmethod
+    def create_jwt(username, password):
+        """Create a JWT that authenticates with the given user/password."""
+        jwt_dict = dict(
+            iss='client',
+            sub=username,
+            iat=datetime.datetime.utcnow(),
+            exp=datetime.datetime.utcnow() + datetime.timedelta(seconds=300)
+        )
+        return jwt.encode(
+            jwt_dict, password,
+            algorithm=BasicPasswordAuthManager.DEFAULT_ALGORITHM)

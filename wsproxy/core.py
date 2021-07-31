@@ -37,7 +37,7 @@ class WsClientConnection(object):
     available. The process is TBD.
     """
 
-    def __init__(self, context, url_or_request, auth_context=None):
+    def __init__(self, context, url_or_request, auth_callback=None):
         """Create a WsClientConnection object.
 
         This object is responsible for managing the state of a connection to
@@ -48,6 +48,8 @@ class WsClientConnection(object):
         ----------
         context: WsContext
             The websocket context with the routes and auth manager to use.
+        auth_manager: AuthManager
+            The auth manager to resolve auth contexts for a given connection.
         url_or_request: str or tornado.httpclient.HTTPRequest
             The request information to use. If only a string is passed, then
             the string is assumed to be the URL.
@@ -66,7 +68,8 @@ class WsClientConnection(object):
 
         self.context = context
         self._is_connected = asyncio.Event()
-        self._auth_context = auth_context
+        self._auth_manager = self.context.auth_manager
+        self._auth_callback = auth_callback or (lambda _: '')
 
     @property
     def is_connected(self):
@@ -86,11 +89,13 @@ class WsClientConnection(object):
             ping_interval=5, ping_timeout=15)
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
-        print(msg)
-        await self._cxn.write_message(json.dumps(dict(auth="")))
+        # Parse the auth context using the given string (usually a JWT).
+        auth_context = self._auth_manager.get_auth_context(msg)
+        auth_token = self._auth_callback(msg)
+        await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
 
         state = await self.context.add_outgoing_connection(
-            self.cxn_id, self, auth_context=self._auth_context,
+            self.cxn_id, self, auth_context=auth_context,
             other_url=self.url)
         asyncio.create_task(self._run())
         self._is_connected.set()
@@ -150,14 +155,12 @@ class WsServerHandler(websocket.WebSocketHandler):
             self._state = None
 
     async def on_message(self, message):
-        print("MSG: ", message)
-        print("HANDSHAKE: ", self._handshake_complete)
         if not self._handshake_complete:
             try:
                 await self._open_client_response(message)
                 self._handshake_complete = True
             except Exception:
-                logger.exception("ASDF")
+                logger.error("Authentication Handshake failed!")
                 # Close the connection, since something failed.
                 self.close()
             return
@@ -171,7 +174,12 @@ class WsServerHandler(websocket.WebSocketHandler):
         # Since it is the client that chose to connect to us, send a JWT
         # token with the current state of this server. (If not configured,
         # it is okay to send an empty response.)
-        await self.write_message(dict(auth=""))
+        try:
+            token = self.context.generate_current_auth_jwt('test')
+            await self.write_message(dict(auth=token))
+        except Exception:
+            logger.exception("Error trying to open connection! Closing...")
+            self.close()
 
     async def _open_client_response(self, message):
         auth_info = json.loads(message)
@@ -249,6 +257,15 @@ class WsContext(object):
     def auth_manager(self):
         """Return the AuthManager for this websocket."""
         return self._auth_manager
+
+    def generate_current_auth_jwt(self, msg):
+        """Generate a JWT used to verify/authenticate this WsContext.
+
+        The resulting token is sent during an authentication request and should
+        be signed as appropriate. The resulting JWT token should only be valid
+        for a very short time window, since it is (basically) one-time use.
+        """
+        return ''
 
     async def add_incoming_connection(
             self, cxn_id, cxn, auth_context=None, other_url=None):
@@ -463,25 +480,3 @@ class WebsocketState(object):
                 # handler.close() should return a future.
                 res.append(handler.close())
         await asyncio.gather(*res)
-
-
-class Endpoint(object):
-
-    def __init__(self, state, msg_id):
-        self.msg_id = msg_id
-        self.state = state
-
-    async def next(self, msg):
-        await self.state.write_message(dict(
-            id=self.msg_id, status="next", message=msg
-        ))
-
-    async def complete(self):
-        await self.state.write_message(dict(
-            id=self.msg_id, status="complete"
-        ))
-
-    async def error(self, error):
-        await self.state.write_message(dict(
-            id=self.msg_id, status="error", message=error
-        ))

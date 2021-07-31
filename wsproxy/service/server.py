@@ -13,7 +13,7 @@ from tornado import web, httpserver, netutil
 from wsproxy import (
     util, core
 )
-from wsproxy.authentication.manager import AuthManager
+import wsproxy.authentication.manager as auth_module
 from wsproxy.routes import (
     socks5, info, tunnel
 )
@@ -204,6 +204,9 @@ def main():
 
     # Configure the authentication parameters.
     parser.add_argument(
+        '--password', dest='password', type=str, default=None,
+        help="Password to permit access to this server.")
+    parser.add_argument(
         '--allow-all-access', dest='all_access', action='store_true',
         help="WARNING: Allow all access without authentication.")
 
@@ -232,7 +235,13 @@ def main():
         key_path = None
 
     # Setup the server's context.
-    auth_manager = AuthManager()
+    if args.password:
+        auth_manager = auth_module.BasicPasswordAuthManager(
+            'admin', args.password)
+    elif args.all_access:
+        auth_manager = auth_module.AuthManager()
+    else:
+        auth_manager = auth_module.AuthManager()
 
     try:
         context = get_context(auth_manager, debug=debug)
