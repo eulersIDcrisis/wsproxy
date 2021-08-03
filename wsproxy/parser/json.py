@@ -117,11 +117,8 @@ class JsonParser(object):
     # is clearly the first character of a JSON object.
     opcode = ord('{')
 
-    def __init__(self, route_list):
-        self.__route_mapping = {
-            route.name: route
-            for route in route_list
-        }
+    def __init__(self, route_mapping):
+        self.__route_mapping = route_mapping
 
     @property
     def route_mapping(self):

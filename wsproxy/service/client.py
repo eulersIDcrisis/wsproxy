@@ -13,9 +13,7 @@ from tornado import httpclient
 from wsproxy import (
     util, core
 )
-from wsproxy.routes import (
-    socks5, info, tunnel
-)
+import wsproxy.routes.registry as route_registry
 from wsproxy.authentication.manager import (
     AuthManager, BasicPasswordAuthFactory
 )
@@ -53,9 +51,8 @@ class WsproxyClientService(util.IOLoopContext):
 
         self.ioloop.add_callback(self.run_main_loop)
 
-        routes = info.get_routes()
-        routes.extend(tunnel.get_routes())
-        self.context = core.WsContext(auth_manager, routes, debug=debug)
+        route_mapping = route_registry.get_route_mapping()
+        self.context = core.WsContext(auth_manager, route_mapping, debug=debug)
 
         self._on_connect_handlers = []
 
@@ -92,10 +89,12 @@ class WsproxyClientService(util.IOLoopContext):
                 return
             self._is_connected.set()
 
-            await asyncio.gather(*[
+            callbacks = [
                 handler(state) for handler in self._on_connect_handlers
-            ])
-            await cxn._run()
+            ]
+            callbacks.append(cxn._run())
+
+            await asyncio.gather(*callbacks)
         except Exception:
             logger.exception("Error in run_main_loop()")
         finally:
@@ -109,7 +108,7 @@ class WsproxyClientService(util.IOLoopContext):
                 socks_server.setup()
                 logger.info("Setting up SOCKSv5 proxy on port: %s",
                             socks_server.port)
-                while True:
+                while state.connection.is_connected:
                     await asyncio.sleep(10.0)
             finally:
                 socks_server.teardown()

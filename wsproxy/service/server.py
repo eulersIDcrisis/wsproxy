@@ -14,9 +14,7 @@ from wsproxy import (
     util, core
 )
 import wsproxy.authentication.manager as auth_module
-from wsproxy.routes import (
-    socks5, info, tunnel
-)
+import wsproxy.routes.registry as route_registry
 
 
 # Bring the logger into scope here.
@@ -106,11 +104,8 @@ class ClientPortHandler(WsproxyBaseHandler):
 
 
 def get_context(auth_manager, debug=0):
-    routes = info.get_routes()
-    routes.extend(tunnel.get_routes())
-    routes.extend(socks5.get_routes())
-
-    return core.WsContext(auth_manager, routes, debug=debug)
+    route_mapping = route_registry.get_route_mapping()
+    return core.WsContext(auth_manager, route_mapping, debug=debug)
 
 
 class WsproxyService(util.IOLoopContext):

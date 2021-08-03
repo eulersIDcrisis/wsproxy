@@ -262,15 +262,6 @@ class WsContext(object):
         """Return the AuthManager for this websocket."""
         return self._auth_manager
 
-    def generate_current_auth_jwt(self, msg):
-        """Generate a JWT used to verify/authenticate this WsContext.
-
-        The resulting token is sent during an authentication request and should
-        be signed as appropriate. The resulting JWT token should only be valid
-        for a very short time window, since it is (basically) one-time use.
-        """
-        return ''
-
     async def add_incoming_connection(
             self, cxn_id, cxn, auth_context=None, other_url=None):
         """Create the new connection and add it.
