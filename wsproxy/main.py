@@ -113,7 +113,6 @@ def run_from_options(options):
 
     clients = []
     for client_options in options.get('clients', []):
-        print("CLIENT OPTS: ", client_options)
         client = _parse_client_options(context, client_options)
         clients.append(client)
 
@@ -200,15 +199,16 @@ server:
 # instance will attempt to connect to another wsproxy server). Unlike
 # the server options, multiple clients can be configured.
 clients:
- -  client:
+    # First client
+ -  url: "wss://wsproxyserver.com"
     enabled: true
-    url: "wss://wsproxyserver.com"
     ssl:
       enabled: true
       cert_path: "/path/to/verify/cert"
       # Set to true to include verifying the host as a part of the
       # validation.
       verify_host: false
+    # Second client (if desired), etc.
 """
 
 if __name__ == '__main__':

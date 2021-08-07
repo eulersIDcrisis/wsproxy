@@ -211,6 +211,9 @@ class JsonParser(object):
                     "Existing handler already exists with Msg ID: %s",
                     msg_id)
 
+            # Will raise a not authorized exception if invalid.
+            state.auth_context.check_json_route(route)
+
             handler = self.route_mapping[route]
             endpoint = Endpoint(
                 state, msg_id,
@@ -218,9 +221,6 @@ class JsonParser(object):
             sub = asyncio.create_task(handler(endpoint, args))
             # sub = asyncio.create_task(handler(state, msg_id, msg_type, args))
             state.msg_mapping[msg_id] = (sub, endpoint)
-
-            # Will raise a not authorized exception if invalid.
-            state.auth_context.check_json_route(route)
 
             return
         except websocket.WebSocketClosedError:

@@ -178,6 +178,8 @@ class WsServerHandler(websocket.WebSocketHandler):
                 self._handshake_complete = True
             except Exception:
                 logger.error("Authentication Handshake failed!")
+                if self.context.debug > 0:
+                    logger.exception("Authentication Handshake error:")
                 # Close the connection, since something failed.
                 self.close()
             return

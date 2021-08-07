@@ -10,6 +10,7 @@ user is allowed to perform.
 The goal is to eventually make these AuthContext's configurable, so
 that different levels of access are allowed.
 """
+import ipaddress
 from abc import ABCMeta, abstractmethod
 
 
@@ -59,9 +60,25 @@ class NoAccessAuthContext(AuthContext):
 class AllAccessAuthContext(AuthContext):
 
     def check_proxy_request(self, host, port, protocol):
-        print("{} {} {}".format(protocol, host, port))
         return True
 
     def check_json_route(self, route):
-        print(route)
+        return True
+
+
+class CustomAccessAuthContext(AuthContext):
+
+    def __init__(self, permit_localhost=True, permit_private_subnets=True):
+        self._permit_localhost = permit_localhost
+        self._permit_private_subnets = permit_private_subnets
+
+    def check_json_route(self, route):
+        return True
+
+    def check_proxy_request(self, host, port, protocol):
+        ip = ipaddress.ip_address(host)
+        if not self._permit_localhost and ip.is_loopback:
+            return False
+        if not self._permit_private_subnets and ip.is_private:
+            return False
         return True
