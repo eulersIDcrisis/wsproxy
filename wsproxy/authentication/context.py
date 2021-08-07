@@ -28,6 +28,14 @@ class AuthContext(metaclass=ABCMeta):
     valid; the arguments passed are the name of the route and some field.
     """
 
+    def __init__(self, user='(nobody)'):
+        self._user = user
+
+    @property
+    def subject(self):
+        """Return the user registered for this AuthContext."""
+        return self._subject
+
     @abstractmethod
     def check_proxy_request(self, host, port, protocol):
         return True

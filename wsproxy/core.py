@@ -101,25 +101,38 @@ class WsClientConnection(object):
         state = await self.context.add_outgoing_connection(
             self.cxn_id, self, auth_context=auth_context,
             other_url=self.url)
-        asyncio.create_task(self._run())
+        asyncio.create_task(self._run_read_loop())
         self._is_connected.set()
         self._state = state
         return state
 
-    async def _run(self):
+    async def _run_read_loop(self):
         # After connecting, listen for messages until the connection closes.
-        try:
-            while True:
-                msg = await self.cxn.read_message()
-                if msg is None:
-                    return
-                asyncio.create_task(self.state.on_message(msg))
-        finally:
-            await self.context.remove_connection(self.cxn_id)
-            self._is_connected.clear()
+        while True:
+            msg = await self.cxn.read_message()
+            if msg is None:
+                return
+            asyncio.create_task(self.state.on_message(msg))
 
     async def write_message(self, msg, binary=False):
         await self._cxn.write_message(msg, binary=binary)
+
+    async def _run_connection(self):
+        try:
+            await self.open()
+            self._is_connected.set()
+            await self._run_read_loop()
+        except Exception as exc:
+            logger.warning("Could not connect %s -- Reason: %s",
+                           self.url, exc)
+        finally:
+            self._is_connected.clear()
+            self.context.remove_connection(self.cxn_id)
+
+    async def run(self):
+        while True:
+            await self._run_connection()
+            await asyncio.sleep(5)
 
 
 class WsServerHandler(websocket.WebSocketHandler):

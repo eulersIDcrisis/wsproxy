@@ -116,12 +116,12 @@ class BasicPasswordAuthFactory:
                 BasicPasswordAuthFactory.DEFAULT_ALGORITHM
             ])
             # Check the subject of the JWT.
-            if jwt_dict.get('sub') != self.__username:
+            user = jwt_dict.get('sub')
+            if user != self.__username:
                 raise ValueError("Invalid subject for JWT.")
 
             # TODO -- Check that the time range of this JWT is within bounds.
-
-            return AllAccessAuthContext()
+            return AllAccessAuthContext(user)
         except Exception as exc:
             logger.error("Error in get_auth_context (BasicPassword): %s", exc)
         return NoAccessAuthContext()
