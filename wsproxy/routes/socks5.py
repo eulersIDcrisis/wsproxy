@@ -234,7 +234,7 @@ async def socks5_proxy_subscription(endpoint, args):
 def get_routes():
     """Return the routes that pertain to SOCKS5 proxies."""
     return [
-        Route(RouteType.SUB, "socks5_proxy", socks5_proxy_subscription,
+        Route(RouteType.SUB, 'socks5_proxy', socks5_proxy_subscription,
               'socks5_proxy'),
     ]
 

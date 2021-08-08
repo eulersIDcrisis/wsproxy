@@ -204,7 +204,7 @@ class JsonParser(object):
             # For the other route types, there will be a "route" and optional
             # "args" field.
             route = res['route']
-            args = res.get('args')
+            args = res.get('args', {})
 
             if state.msg_mapping.get(msg_id):
                 raise Exception(

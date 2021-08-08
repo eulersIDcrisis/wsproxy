@@ -19,7 +19,7 @@ async def info_subscription(endpoint, args):
         # Require the sleep time to be at least 1 second.
         sleep_time = min(1, args.get('sleep_time', 5))
     except Exception:
-        endpoint.error('Invalid arguments!')
+        await endpoint.error('Invalid arguments!')
         return
     while True:
         process = psutil.Process()

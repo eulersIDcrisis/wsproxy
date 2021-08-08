@@ -76,6 +76,8 @@ def _parse_client_options(context, client_options):
     else:
         ssl_context = None
 
+    # Check for any custom 
+
     request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
     return core.WsClientConnection(context, request)
 
