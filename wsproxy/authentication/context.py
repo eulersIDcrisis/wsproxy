@@ -33,9 +33,14 @@ class AuthContext(metaclass=ABCMeta):
         self._user = user
 
     @property
+    def user(self):
+        """Return the user registered for this AuthContext."""
+        return self._user
+
+    @property
     def subject(self):
         """Return the user registered for this AuthContext."""
-        return self._subject
+        return self.user
 
     @abstractmethod
     def check_proxy_request(self, host, port, protocol):

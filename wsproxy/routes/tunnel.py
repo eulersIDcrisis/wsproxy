@@ -202,7 +202,8 @@ class ProxySocket(object):
         raw_buff[1:17] = self.socket_id.bytes
         buff = memoryview(raw_buff)
         try:
-            while True:
+            # while True:
+            while self.state.is_connected:
                 count = await self._local_stream.read_into(buff[18:], partial=True)
                 await self.state.write_message(buff[:18 + count], binary=True)
                 total_count += count
@@ -226,7 +227,8 @@ class ProxySocket(object):
 
 async def _write_monitor_updates(endpoint, proxy_stream):
     try:
-        while True:
+        while endpoint.state.is_connected:
+        # while True:
             byte_count = await proxy_stream.byte_count_update()
             await endpoint.next(dict(count=byte_count))
     except (SubscriptionComplete, iostream.StreamClosedError):
@@ -260,7 +262,7 @@ async def proxy_socket_subscription(endpoint, args):
         await endpoint.error(dict(message="Not Authorized."))
         return
     except Exception:
-        logger.exception("asdf")
+        logger.exception("Error in proxy_socket subscription.")
         await endpoint.error(dict(message="Internal Error"))
         return
     state = endpoint.state

@@ -67,12 +67,19 @@ class WsClientConnection(object):
         self.request.connect_timeout = 10
 
         self.context = context
-        self._is_connected = asyncio.Event()
         self._auth_manager = self.context.auth_manager
+
+        # Connection starts out as closed, so set the event.
+        self._connection_closed = asyncio.Event()
+        self._connection_closed.set()
 
     @property
     def is_connected(self):
-        return self._is_connected
+        return not self._connection_closed.is_set()
+
+    @property
+    def connection_closed_event(self):
+        return self._connection_closed
 
     @property
     def cxn(self):
@@ -98,11 +105,13 @@ class WsClientConnection(object):
         auth_token = self._auth_manager.generate_auth_jwt('')
         await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
 
+        # At this point, we are connected and authenticated, so clear the
+        # connection_closed event.
+        self._connection_closed.clear()
         state = await self.context.add_outgoing_connection(
             self.cxn_id, self, auth_context=auth_context,
             other_url=self.url)
         asyncio.create_task(self._run_read_loop())
-        self._is_connected.set()
         self._state = state
         return state
 
@@ -111,6 +120,8 @@ class WsClientConnection(object):
         while True:
             msg = await self.cxn.read_message()
             if msg is None:
+                # Implies the connection should be closed.
+                self._connection_closed.set()
                 return
             asyncio.create_task(self.state.on_message(msg))
 
@@ -120,13 +131,13 @@ class WsClientConnection(object):
     async def _run_connection(self):
         try:
             await self.open()
-            self._is_connected.set()
             await self._run_read_loop()
         except Exception as exc:
             logger.warning("Could not connect %s -- Reason: %s",
                            self.url, exc)
         finally:
-            self._is_connected.clear()
+            # Set this event if it weren't set already.
+            self._connection_closed.set()
             self.context.remove_connection(self.cxn_id)
 
     async def run(self):
@@ -149,6 +160,9 @@ class WsServerHandler(websocket.WebSocketHandler):
         self.client_port = None
         self.cxn_id = None
         self._handshake_complete = False
+        # No need to set this event now because the connection is in the
+        # process of opening if this is called.
+        self._connection_closed = asyncio.Event()
 
     @property
     def context(self):
@@ -159,11 +173,16 @@ class WsServerHandler(websocket.WebSocketHandler):
         return self._state
 
     @property
+    def connection_closed_event(self):
+        return self._connection_closed
+
+    @property
     def url(self):
         return u'{}:{}'.format(self.client_ip, self.client_port)
 
     def on_close(self):
         try:
+            self._connection_closed.set()
             logger.info("Closing client CXN with ID: %s", self.cxn_id)
             context = self.context
             if context:
@@ -372,6 +391,18 @@ class WebsocketState(object):
     @property
     def auth_context(self):
         return self._auth_context
+
+    @property
+    def is_connected(self):
+        if self.connection_closed_event:
+            return not self.connection_closed_event.is_set()
+        return False
+
+    @property
+    def connection_closed_event(self):
+        if self.connection:
+            return self.connection.connection_closed_event
+        return None
 
     @property
     def debug(self):

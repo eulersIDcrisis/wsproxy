@@ -1,262 +1,162 @@
-"""server.py.
+"""main.py.
 
-Module that implements the Server portion of wsproxy.
-
-This defines the WsproxyServer class, along with some other features.
+Main entrypoint for using the wsproxy tool. There is a single
+point of configuration for both client and server (and hybrid)
+usage, as well as the different configuration options.
 """
 import sys
-import uuid
 import logging
 import argparse
-import traceback
-from tornado import web, httpserver, netutil
-from wsproxy import (
-    util, core
-)
-import wsproxy.authentication.manager as auth_module
-import wsproxy.routes.registry as route_registry
+import yaml
+from tornado import web, httpserver, httpclient, netutil, ioloop
+from wsproxy import core, util
+from wsproxy.routes import registry as route_registry
+from wsproxy.authentication.manager import BasicPasswordAuthFactory
 
 
-# Bring the logger into scope here.
-logger = util.get_child_logger('server')
+logger = util.get_child_logger('main')
 
 
-class LoginHandler(web.RequestHandler):
+def _parse_server_options(context, server_options):
+    servers = []
+    # TODO -- permit configuring which routes are allowed.
+    port = server_options.get('port', 8080)
+    logger.info("Running server on port: %d", port)
 
-    def post(self):
-        try:
-            req = json.loads(self.request.body)
-
-            user = req['user']
-            password = req['password']
-
-            res = json.dumps(req)
-            self.set_secure_cookie(res)
-            self.write(dict(status=200, message="Logged in successfully."))
-        except Exception:
-            self.set_status(403)
-            self.write(dict(status=403, message="Invalid login."))
-
-
-class WsproxyBaseHandler(web.RequestHandler):
-
-    def initialize(self, *args, **kwargs):
-        self.context = None
-
-    async def prepare(self):
-        try:
-            self.context = self.application.settings['context']
-            res = self.get_secure_cookie('wsproxy')
-            if res:
-                self.current_user = res
-        except Exception:
-            pass
-
-
-class InfoHandler(WsproxyBaseHandler):
-
-    def get(self):
-        clients = {
-            str(cxn_id): state.get_info()
-            for cxn_id, state in self.context.cxn_state_mapping.items()
-        }
-        self.write(dict(current_connections=clients))
-
-
-class ClientInfoHandler(WsproxyBaseHandler):
-
-    async def get(self, cxn_id):
-        try:
-            state = self.context.find_state_for_cxn_id(cxn_id)
-            if not state:
-                self.set_status(404)
-                self.write(dict(status=404, message="Not Found"))
-                return
-            # Send a request to the client to get the info for the platform.
-            res = await once(state, 'info', None)
-            res['ip_address'] = state.other_url
-            self.write(res)
-        except Exception:
-            logger.exception("Error with client")
-            self.set_status(500, "Internal Error")
-        finally:
-            await self.finish()
-
-
-class ClientPortHandler(WsproxyBaseHandler):
-
-    async def post(self, cxn_id):
-        try:
-            state = self.context.find_state_for_cxn_id(cxn_id)
-            if not state:
-                self.set_status(404)
-                self.write(dict(status=404, message="Not Found"))
-                return
-            # Send a request to the client to get the info for the platform.
-            res = await once(state, 'info', None)
-            res['ip_address'] = state.other_url
-            self.write(res)
-        except Exception:
-            logger.exception("Error with client")
-            self.set_status(500, "Internal Error")
-        finally:
-            await self.finish()
-
-
-def get_context(auth_manager, debug=0):
-    route_mapping = route_registry.get_route_mapping()
-    return core.WsContext(auth_manager, route_mapping, debug=debug)
-
-
-class WsproxyService(util.IOLoopContext):
-
-    def __init__(self, context):
-        super().__init__()
-
-        # Assign the master context.
-        self.context = context
-
-        routes = [
-            (r'/api/login', LoginHandler),
-            (r'/api/ws', core.WsServerHandler, dict(context=self.context)),
-            (r'/api/client/details', InfoHandler),
-            (r'/api/client/(?P<cxn_id>[^/]+)', ClientInfoHandler),
-            (r'/api/client/(?P<cxn_id>[^/]+)/tunnel', ClientPortHandler)
-        ]
-
-        # Set the cookie secret.
-        cookie_secret = '{}{}'.format(uuid.uuid4().hex, uuid.uuid4().hex)
-        self.app = web.Application(routes, cookie_secret=cookie_secret, context=self.context)
-        self.servers = []
-
-    def bind_to_ports(self, ports=None, unix_sockets=None):
-        if not ports and not unix_sockets:
-            return
-
-        ports = ports or []
-        unix_sockets = unix_sockets or []
-
-        server = httpserver.HTTPServer(self.app)
-        for port in ports:
-            sockets = netutil.bind_sockets(port)
-            server.add_sockets(sockets)
-
-        # Also include any UNIX sockets, as needed.
-        for path in unix_sockets:
-            socket = netutil.bind_unix_socket(path)
-            server.add_sockets([socket])
-
-        # Start the server, so it can process once the loop starts.
-        server.start()
-        self.servers.append(server)
-        # Add these hooks to drain cleanly.
-        self.add_ioloop_drain_hook(server.close_all_connections)
-
-    def bind_to_ssl_ports(self, ports, cert_path, key_path):
+    ssl_options = server_options.get('ssl', {})
+    if ssl_options.get('enabled', False):
         import ssl
+
+        cert_path = ssl_options['cert_path']
+        key_path = ssl_options['key_path']
 
         ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ssl_ctx.load_cert_chain(cert_path, key_path)
-        server = httpserver.HTTPServer(self.app, ssl_options=ssl_ctx)
-        for port in ports:
-            sockets = netutil.bind_sockets(port)
-            server.add_sockets(sockets)
-        server.start()
-        self.servers.append(server)
-        self.add_ioloop_drain_hook(server.close_all_connections)
+        logger.info("Enabling SSL with cert: %s", cert_path)
+    else:
+        ssl_ctx = None
+        logger.warning("SSL DISABLED")
+
+    routes = [
+        (r'/ws', core.WsServerHandler, dict(context=context)),
+    ]
+    port_app = web.Application(routes, ssl_context=ssl_ctx)
+    port_server = httpserver.HTTPServer(port_app)
+    sockets = netutil.bind_sockets(port)
+    port_server.add_sockets(sockets)
+    port_server.start()
+    servers.append(port_server)
+
+    unix_socket_path = server_options.get('unix_socket')
+    if unix_socket_path:
+        logger.info("Running server on UNIX path: %s", unix_socket_path)    
+
+        unix_app = web.Application(routes)
+        unix_server = httpserver.HTTPServer(unix_app)
+        unix_socket = netutil.bind_unix_socket(unix_socket_path)
+        unix_server.add_sockets([unix_socket])
+        unix_server.start()
+        servers.append(unix_server)
+
+    return servers
+
+
+def _parse_client_options(context, client_options):
+    url = client_options['url']
+    logger.info('Client will connect to URL: %s', url)
+    custom_ssl = client_options.get('ssl', {})
+    if custom_ssl.get('enabled', False):
+        cert_path = custom_ssl.get('cert_path')
+        # Assume true by default.
+        verify_host = custom_ssl.get('verify_host', True)
+    else:
+        cert_path = None
+
+    if cert_path:
+        import ssl
+
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        ssl_context.check_hostname = verify_host
+        ssl_context.load_verify_locations(cert_path)
+        logger.info('Using cert chain: %s (verify host: %s)',
+                    cert_path, 'True' if verify_host else 'False')
+    else:
+        ssl_context = None
+
+    request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
+    return core.WsClientConnection(context, request)
+
+
+def run_from_options(options):
+    # Parse the different fields.
+    log_file = options.get('file')
+    debug = options.get('debug', 1)
+
+    # Initialize the logger.
+    level = logging.DEBUG if debug > 0 else logging.INFO
+    handlers = []
+    handlers.append(logging.StreamHandler(sys.stderr))
+    # if args.log_file:
+    #     handlers.append(logging.FileHandler(args.log_file))
+    util.setup_default_logger(handlers, level)
+
+    auth_options = options.get('auth', {})
+    username = auth_options.get('username', 'admin')
+    password = auth_options.get('password', 'password')
+
+    # Parse the auth manager.
+    auth_manager = BasicPasswordAuthFactory(
+        username, password
+    ).create_auth_manager()
+
+    # Setup the routes.
+    route_mapping = route_registry.get_route_mapping()
+    context = core.WsContext(auth_manager, route_mapping, debug=debug)
+
+    # Parse server options.
+    servers = []
+    server_options = options.get('server', {})
+    if server_options.get('enabled', False):
+        servers = _parse_server_options(context, server_options)
+
+    clients = []
+    for client_options in options.get('clients', []):
+        client = _parse_client_options(context, client_options)
+        clients.append(client)
+
+    # Run with all of the options now passed.
+    try:
+        loop = ioloop.IOLoop.current()
+        # Queue up all of the clients to run.
+        for client in clients:
+            loop.add_callback(client.run)
+
+        # Start the loop.
+        loop.start()
+        loop.close()
+    except Exception:
+        logger.exception('Error running event loop!')
 
 
 def main():
-    """Main entrypoint for the proxy.
-
-    This parses the program arguments and runs the server or client, depending
-    on the options passed.
-    """
-    parser = argparse.ArgumentParser(description='Run a wsproxy server.')
-
-    # Logging and other 'global' options.
-    parser.add_argument('-v', '--verbose', action='count', help=(
-        "Enable verbose (logging) output. Passing multiple times "
-        "increases verbosity."))
+    parser = argparse.ArgumentParser(description='Run wsproxy.')
     parser.add_argument(
-        '-q', '--no-stderr-log', action='store_false', dest='stderr_log',
-        help=("Disable logging to stderr. This does not affect verbosity or "
-              "other settings."))
+        '-c', '--config', type=str, help="Configuration file to run the server.")
     parser.add_argument(
-        '--log-file', type=str, default=None, dest='log_file',
-        help="Write log to file (in addition to stderr, if configured).")
+        '--generate-default', action='store_true', dest='generate',
+        help="Generate a default configuration file and print to stdout.")
 
-    # Ports for the server.
-    parser.add_argument('-p', '--port', type=int, default=8080)
-    parser.add_argument(
-        '--unix-socket', type=str, nargs='*', dest='unix_sockets')
-
-    # Configure the certificate parameters, if passed.
-    parser.add_argument(
-        '--ssl-cert', dest='cert_path', default='', nargs=2, type=str,
-        metavar=('CERT_FILE', 'KEY_FILE'),
-        help="Path to cert file and key file to use when running with SSL.")
-
-    # Configure the authentication parameters.
-    parser.add_argument(
-        '--password', dest='password', type=str, default=None,
-        help="Password to permit access to this server.")
-    parser.add_argument(
-        '--allow-all-access', dest='all_access', action='store_true',
-        help="WARNING: Allow all access without authentication.")
-
-    # Parse the args and run the server.
     args = parser.parse_args()
-
-    # Setup the logger based on some of the arguments.
-    debug = args.verbose or 0
-    level = logging.DEBUG if debug > 0 else logging.INFO
-    handlers = []
-    if args.stderr_log:
-        handlers.append(logging.StreamHandler(sys.stderr))
-    if args.log_file:
-        handlers.append(logging.FileHandler(args.log_file))
-    util.setup_default_logger(handlers, level)
-
-    # Setup the rest of the server.
-    port = args.port
-    unix_sockets = args.unix_sockets or []
-    cert_paths = getattr(args, 'cert_path', [])
-    if len(cert_paths) == 2:
-        cert_path = cert_paths[0]
-        key_path = cert_paths[1]
-    else:
-        cert_path = None
-        key_path = None
-
-    # Setup the server's context.
-    if args.password:
-        auth_manager = auth_module.BasicPasswordAuthFactory(
-            'admin', args.password
-        ).create_auth_manager()
-    elif args.all_access:
-        auth_manager = auth_module.AuthManager(
-            auth_module.AuthManager.get_all_access_context
-        )
-    else:
-        auth_manager = auth_module.AuthManager()
-
-    try:
-        context = get_context(auth_manager, debug=debug)
-        util.main_logger.info("Running server on port: %s", port)
-        server = WsproxyService(context)
-
-        if cert_path and key_path:
-            server.bind_to_ssl_ports([port], cert_path, key_path)
-            # Do NOT bind UNIX sockets with SSL for now.
-            server.bind_to_ports([], unix_sockets=unix_sockets)
-        else:
-            server.bind_to_ports([port], unix_sockets=unix_sockets)
-        server.run_ioloop()
+    if args.generate:
+        print(get_default_config_file_contents())
         sys.exit(0)
-    except Exception:
-        traceback.print_exc()
-        sys.exit(1)
+        return
+
+    with open(args.config, 'r') as stm:
+        options = yaml.safe_load(stm)
+
+    run_from_options(options)
 
 
 if __name__ == '__main__':

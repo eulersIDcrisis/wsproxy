@@ -221,8 +221,10 @@ async def socks5_proxy_subscription(endpoint, args):
         server.setup()
         await endpoint.next(dict(port=port))
 
-        while True:
-            await asyncio.sleep(10.0)
+        await endpoint.state.connection_closed_event.wait()
+
+        # while True:
+        #     await asyncio.sleep(10.0)
     except Exception:
         logger.exception('Exception hosting SOCKS5 proxy subscription.')
         await endpoint.error('Error in socks5 proxy!')
