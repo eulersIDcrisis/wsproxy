@@ -12,7 +12,7 @@ from tornado import web, httpserver, httpclient, netutil, ioloop
 from wsproxy import core, util
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
-
+from wsproxy.service.config import get_default_config_file_contents
 
 logger = util.get_child_logger('main')
 
@@ -151,6 +151,11 @@ def main():
     if args.generate:
         print(get_default_config_file_contents())
         sys.exit(0)
+        return
+
+    if not args.config:
+        print("No configuration file specified. Exiting")
+        sys.exit(1)
         return
 
     with open(args.config, 'r') as stm:
