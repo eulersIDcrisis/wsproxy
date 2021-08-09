@@ -57,8 +57,12 @@ def main():
     user = auth_options.get('username', '')
     password = auth_options.get('password', '')
 
-    # url = options.get('server', {}).get('unix_socket', '')
+    port = options.get('server', {}).get('port', 8080)
+    # use_ssl = options.get('server', {}).get('ssl', {}).get('enabled', False)
 
+    # TODO -- Require the UNIX socket when running the server?
+    #
+    # url = options.get('server', {}).get('unix_socket', '')
     # resolver = netutil.Resolver()
     # netutil.Resolver.configure(
     #     UnixResolver,
@@ -70,7 +74,7 @@ def main():
     ).create_auth_manager()
     routes = route_registry.get_route_mapping()
     context = core.WsContext(auth_manager, routes)
-    cxn = core.WsClientConnection(context, 'ws://localhost:8080/ws')
+    cxn = core.WsClientConnection(context, 'ws://localhost:{}/ws'.format(port))
     loop = ioloop.IOLoop.current()
     cmds = []
     if args.list:

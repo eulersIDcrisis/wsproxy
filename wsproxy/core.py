@@ -138,7 +138,7 @@ class WsClientConnection(object):
         finally:
             # Set this event if it weren't set already.
             self._connection_closed.set()
-            self.context.remove_connection(self.cxn_id)
+            await self.context.remove_connection(self.cxn_id)
 
     async def run(self):
         while True:
