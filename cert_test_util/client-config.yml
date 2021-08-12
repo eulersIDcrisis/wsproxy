@@ -1,0 +1,40 @@
+
+# wsproxy configuration file.
+---
+logging:
+  # Set the output for the logger. If 'stderr', then write to stderr.
+  file: stderr
+
+# Set as a (nonnegative) integer. Higher numbers imply more verbose
+# output. Currently, this goes up to 3.
+debug: 0
+
+# Auth Configuration
+#
+# Configuration options to authenticate this server and client.
+auth:
+  username: admin
+  password: random-config
+
+# Client Configuration
+#
+# Configuration options when running as a client (when this wsproxy
+# instance will attempt to connect to another wsproxy server). Unlike
+# the server options, multiple clients can be configured.
+clients:
+  - client:
+    enabled: true
+    url: "ws://localhost:8080/ws"
+    ssl:
+      enabled: true
+      cert_path: "cert_test_util/cert.crt"
+      # Set to true to include verifying the host as a part of the
+      # validation.
+      verify_host: false
+    auth:
+      # If true, permit the server to access localhost (i.e. the client
+      # instance) when proxying.
+      permit_localhost: true
+      # If true, permit the server to proxy requests to the client's
+      # private subnets (i.e. the client's local network/LAN).
+      permit_private_subnets: false
