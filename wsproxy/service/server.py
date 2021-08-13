@@ -40,8 +40,8 @@ def _parse_server_options(context, server_options):
     routes = [
         (r'/ws', core.WsServerHandler, dict(context=context)),
     ]
-    port_app = web.Application(routes, ssl_context=ssl_ctx)
-    port_server = httpserver.HTTPServer(port_app)
+    port_app = web.Application(routes)
+    port_server = httpserver.HTTPServer(port_app, ssl_context=ssl_ctx)
     sockets = netutil.bind_sockets(port)
     port_server.add_sockets(sockets)
     port_server.start()
