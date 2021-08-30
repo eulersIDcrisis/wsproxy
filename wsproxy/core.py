@@ -37,7 +37,7 @@ class WsClientConnection(object):
     available. The process is TBD.
     """
 
-    def __init__(self, context, url_or_request):
+    def __init__(self, context, url_or_request, override_auth_manager=None):
         """Create a WsClientConnection object.
 
         This object is responsible for managing the state of a connection to
@@ -67,6 +67,7 @@ class WsClientConnection(object):
         self.request.connect_timeout = 10
 
         self.context = context
+
         self._auth_manager = self.context.auth_manager
 
         # Connection starts out as closed, so set the event.

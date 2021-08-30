@@ -74,7 +74,22 @@ def main():
     ).create_auth_manager()
     routes = route_registry.get_route_mapping()
     context = core.WsContext(auth_manager, routes)
-    cxn = core.WsClientConnection(context, 'ws://localhost:{}/ws'.format(port))
+    # cxn = core.WsClientConnection(context, 'ws://localhost:{}/ws'.format(port))
+
+    import ssl
+    user = options.get('username', '')
+    password = options.get('password', '')
+
+    verify_host = True
+    cert_path = 'cert.pem'
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+    ssl_context.verify_mode = ssl.CERT_REQUIRED
+    ssl_context.check_hostname = verify_host
+    ssl_context.load_verify_locations(cert_path)
+    url = 'wss://eulersidentitycrisis.mooo.com:8443/ws'
+    request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
+    cxn = core.WsClientConnection(context, request)
+
     loop = ioloop.IOLoop.current()
     cmds = []
     if args.list:
