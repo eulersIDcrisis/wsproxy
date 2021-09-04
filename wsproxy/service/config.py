@@ -19,7 +19,7 @@ debug: 0
 
 # Auth Configuration
 #
-# Configuration options to authenticate this server and client.
+# Superuser authentication parameters here.
 username: admin
 password: password
 

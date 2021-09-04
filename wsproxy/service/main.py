@@ -172,7 +172,7 @@ def run_with_options(options):
 
 def run_admin_mode(options):
     url = options.get('url', u'unix://unix_localhost/tmp/wsproxy.sock')
-    user = options.get('user', '')
+    user = options.get('username', '')
     password = options.get('password', '')
 
     # Parse the URL and handle the case if it is 'unix://'
@@ -269,7 +269,7 @@ def main():
         parents=[parent_parser])
     admin_parser.set_defaults(func=run_admin_mode)
     admin_parser.add_argument(
-        '-u', '--user', type=str, default=None, dest='user',
+        '-u', '--user', type=str, default=None, dest='username',
         help='Username for login. (Default parsed from config file.)')
     admin_parser.add_argument(
         '-p', '--password', type=str, default=None, dest='password',
@@ -300,6 +300,17 @@ def main():
 
     # Add the command line overrides.
     option_overrides = vars(args)
+    skip_option_set = set(['cmd_name', 'cmd'])
+
+    # Merge the CLI options with the parsed config.
+    for option, value in option_overrides.items():
+        # Skip these options which do not pertain to anything parsable.
+        if option in skip_option_set:
+            continue
+        # Skip these options as well (which implies they were not set).
+        if value is None:
+            continue
+        options[option] = value
 
     debug = option_overrides.get('debug')
     if debug is not None:
@@ -313,11 +324,6 @@ def main():
     #     handlers.append(logging.FileHandler(args.log_file))
     util.setup_default_logger(handlers, level)
 
-    for key, value in option_overrides.items():
-        # Skip 'None' defaults.
-        if value is None:
-            continue
-        options[key] = value
     # After overriding with the CLI options.
     args.func(options)
 
