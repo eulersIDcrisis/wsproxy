@@ -234,7 +234,7 @@ async def _run_admin_command(cxn, cmd):
 
 
 def main():
-    default_config = os.path.join(os.getcwd(), 'config.yml')
+    default_config = '/etc/wsproxy/config.yml'
 
     parent_parser = argparse.ArgumentParser(add_help=False)
     global_options = parent_parser.add_argument_group(
