@@ -108,16 +108,30 @@ class BasicPasswordAuthFactory:
     def __init__(self, username, password):
         self.__username = username
         self.__password = password
+        self.__auth_mapping = {
+            username: password
+        }
+        self.__privilege_mapping = {
+            username: "superuser"
+        }
 
     def get_auth_context(self, auth_text):
         try:
-            # Decode the given data as a JWT that is signed with the password.
-            jwt_dict = jwt.decode(auth_text, self.__password, algorithms=[
+            # Parse the subject first to see which key to use.
+            unverified_mapping = jwt.decode(
+                auth_text, options={"verify_signature": False})
+            username = unverified_mapping.get('sub')
+
+            # Use this user to determine the password to get the key for.
+            # If the user isn't registered, this will raise a KeyError.
+            password = self.__auth_mapping.get(username, '')
+
+            jwt_dict = jwt.decode(auth_text, password, algorithms=[
                 BasicPasswordAuthFactory.DEFAULT_ALGORITHM
             ])
-            # Check the subject of the JWT.
+            # Paranoid: check the subject of the JWT.
             user = jwt_dict.get('sub')
-            if user != self.__username:
+            if user not in self.__auth_mapping:
                 raise ValueError("Invalid subject for JWT.")
 
             # TODO -- Check that the time range of this JWT is within bounds.

@@ -94,6 +94,10 @@ class WsClientConnection(object):
         self._cxn = await websocket.websocket_connect(
             self.request, compression_options={},
             ping_interval=12, ping_timeout=60)
+
+        # Parse the auth context using the given string (usually a JWT).
+        auth_token = self._auth_manager.generate_auth_jwt('text')
+        await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
         try:
@@ -101,10 +105,7 @@ class WsClientConnection(object):
             auth = msg_dict.get('auth', '')
         except Exception:
             auth = ''
-        # Parse the auth context using the given string (usually a JWT).
         auth_context = self._auth_manager.get_auth_context(auth)
-        auth_token = self._auth_manager.generate_auth_jwt('')
-        await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
 
         # At this point, we are connected and authenticated, so clear the
         # connection_closed event.
@@ -213,6 +214,18 @@ class WsServerHandler(websocket.WebSocketHandler):
         # Since it is the client that chose to connect to us, send a JWT
         # token with the current state of this server. (If not configured,
         # it is okay to send an empty response.)
+        # try:
+        #     token = self.context.auth_manager.generate_auth_jwt('test')
+        #     await self.write_message(dict(auth=token))
+        # except Exception:
+        #     logger.exception("Error trying to open connection! Closing...")
+        #     self.close()
+        pass
+
+    async def _open_client_response(self, message):
+        auth_info = json.loads(message)
+        auth = auth_info.get('auth', '')
+
         try:
             token = self.context.auth_manager.generate_auth_jwt('test')
             await self.write_message(dict(auth=token))
@@ -220,23 +233,22 @@ class WsServerHandler(websocket.WebSocketHandler):
             logger.exception("Error trying to open connection! Closing...")
             self.close()
 
-    async def _open_client_response(self, message):
-        auth_info = json.loads(message)
-        auth = auth_info.get('auth', '')
-
         # Check the authentication of this request.
         auth_context = self.context.auth_manager.get_auth_context(auth)
 
         # At this point, the authentication context should be set. Continue
         # with the rest of the handshake and start handling requests.
-        if self.request.connection.stream is None:
-            args = self.request.connection.context.address
-            url = "{}:{}".format(*args)
-        else:
-            url = "{}:{}".format(
-                self.request.remote_ip,
-                self.request.connection.stream.socket.getpeername()[1]
-            )
+        try:
+            if self.request.connection.stream is None:
+                args = self.request.connection.context.address
+                url = "{}:{}".format(*args)
+            else:
+                url = "{}:{}".format(
+                    self.request.remote_ip,
+                    self.request.connection.stream.socket.getpeername()[1]
+                )
+        except Exception:
+            url = 'unix_socket'
 
         self.cxn_id = generate_connection_id()
         self._state = await self.context.add_incoming_connection(

@@ -6,12 +6,16 @@ usage, as well as the different configuration options.
 """
 import os
 import sys
+import json
 import socket
+import asyncio
 import logging
 import argparse
+from urllib.parse import urlsplit, urlunsplit
 import yaml
 from tornado import web, httpserver, httpclient, netutil, ioloop
 from wsproxy import core, util
+from wsproxy.parser.json import once
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
 from wsproxy.service.config import get_default_config_file_contents
@@ -24,16 +28,16 @@ logger = util.get_child_logger('main')
 class UnixResolver(netutil.Resolver):
     """Resolver that also resolves for UNIX sockets."""
 
-    def initialize(self, resolver, unix_sockets, *args, **kwargs):
+    def initialize(self, resolver, unix_socket, *args, **kwargs):
         self.resolver = resolver
-        self.unix_sockets = unix_sockets
+        self.unix_socket = unix_socket
 
     def close(self):
         self.resolver.close()
 
     async def resolve(self, host, port, *args, **kwargs):
-        if host in self.unix_sockets:
-            return [(socket.AF_UNIX, self.unix_sockets[host])]
+        if host == 'unix_localhost':
+            return [(socket.AF_UNIX, self.unix_socket)]
         result = await self.resolver.resolve(host, port, *args, **kwargs)
         return result
 
@@ -115,18 +119,7 @@ def _parse_client_options(context, client_options):
 
 
 def run_with_options(options):
-    # Parse the different fields.
-    log_file = options.get('file')
-    debug = options.get('debug', 1)
-
-    # Initialize the logger.
-    level = logging.DEBUG if debug > 0 else logging.INFO
-    handlers = []
-    handlers.append(logging.StreamHandler(sys.stderr))
-    # if args.log_file:
-    #     handlers.append(logging.FileHandler(args.log_file))
-    util.setup_default_logger(handlers, level)
-
+    debug = options.get('debug', 0)
     username = options.get('username', 'admin')
     password = options.get('password', 'password')
 
@@ -177,8 +170,67 @@ def run_with_options(options):
         logger.exception('Error running event loop!')
 
 
-def run_admin_mode(args):
-    pass
+def run_admin_mode(options):
+    url = options.get('url', u'unix://unix_localhost/tmp/wsproxy.sock')
+    user = options.get('user', '')
+    password = options.get('password', '')
+
+    # Parse the URL and handle the case if it is 'unix://'
+    scheme, netloc, path, _, _ = urlsplit(url)
+    if scheme.startswith(u'unix'):
+        resolver = netutil.Resolver()
+        netutil.Resolver.configure(
+            UnixResolver, resolver=resolver, unix_socket=path
+        )
+        url = urlunsplit(('ws', 'unix_localhost', '/ws', '', ''))
+
+    auth_manager = BasicPasswordAuthFactory(
+        user, password
+    ).create_auth_manager()
+    routes = route_registry.get_route_mapping()
+    context = core.WsContext(auth_manager, routes)
+
+    cert_path = options.get('cert_path')
+    if cert_path:
+        import ssl
+
+        verify_host = options.get('verify_host', True)
+
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        ssl_context.check_hostname = verify_host
+        ssl_context.load_verify_locations(cert_path)
+        logger.info('Using cert chain: %s (verify host: %s)',
+                    cert_path, 'True' if verify_host else 'False')
+    else:
+        ssl_context = None
+
+    request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
+    cxn = core.WsClientConnection(context, request)
+    try:
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(_run_admin_command(cxn, 'list'))
+        loop.run_until_complete(task)
+    except Exception:
+        logger.exception("Error running command!")
+    finally:
+        loop.close()
+
+
+async def _run_admin_command(cxn, cmd):
+    await cxn.open()
+    print("Running cmd: {}".format(cmd))
+    args = tuple()
+    if cmd == 'list':
+        res = await once(cxn.state, 'connection_info', args)
+        print(json.dumps(res, indent=2))
+        return
+    if cmd == 'socks5':
+        async with setup_subscription(
+            cxn.state, 'socks5_proxy', args
+        ) as sub:
+            async for msg in sub.result_generator():
+                print("Received: {}".format(msg))
 
 
 def main():
@@ -217,10 +269,10 @@ def main():
         parents=[parent_parser])
     admin_parser.set_defaults(func=run_admin_mode)
     admin_parser.add_argument(
-        '-u', '--user', type=str, default=None,
+        '-u', '--user', type=str, default=None, dest='user',
         help='Username for login. (Default parsed from config file.)')
     admin_parser.add_argument(
-        '-p', '--password', type=str, default=None,
+        '-p', '--password', type=str, default=None, dest='password',
         help='Password for login. (Default parsed from config file.)')
     admin_parser.add_argument(
         '--url', type=str, default=None, help='Connect using the given URL.')
@@ -247,10 +299,25 @@ def main():
         options = {}
 
     # Add the command line overrides.
-    debug = getattr(args, 'debug', None)
+    option_overrides = vars(args)
+
+    debug = option_overrides.get('debug')
     if debug is not None:
         options['debug'] = debug
 
+    # Initialize the logger.
+    level = logging.DEBUG if options.get(debug, 0) > 0 else logging.INFO
+    handlers = []
+    handlers.append(logging.StreamHandler(sys.stderr))
+    # if args.log_file:
+    #     handlers.append(logging.FileHandler(args.log_file))
+    util.setup_default_logger(handlers, level)
+
+    for key, value in option_overrides.items():
+        # Skip 'None' defaults.
+        if value is None:
+            continue
+        options[key] = value
     # After overriding with the CLI options.
     args.func(options)
 
