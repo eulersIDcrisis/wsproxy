@@ -37,7 +37,7 @@ class WsClientConnection(object):
     available. The process is TBD.
     """
 
-    def __init__(self, context, url_or_request):
+    def __init__(self, context, url_or_request, override_auth_manager=None):
         """Create a WsClientConnection object.
 
         This object is responsible for managing the state of a connection to
@@ -67,12 +67,20 @@ class WsClientConnection(object):
         self.request.connect_timeout = 10
 
         self.context = context
-        self._is_connected = asyncio.Event()
+
         self._auth_manager = self.context.auth_manager
+
+        # Connection starts out as closed, so set the event.
+        self._connection_closed = asyncio.Event()
+        self._connection_closed.set()
 
     @property
     def is_connected(self):
-        return self._is_connected
+        return not self._connection_closed.is_set()
+
+    @property
+    def connection_closed_event(self):
+        return self._connection_closed
 
     @property
     def cxn(self):
@@ -86,6 +94,10 @@ class WsClientConnection(object):
         self._cxn = await websocket.websocket_connect(
             self.request, compression_options={},
             ping_interval=12, ping_timeout=60)
+
+        # Parse the auth context using the given string (usually a JWT).
+        auth_token = self._auth_manager.generate_auth_jwt('text')
+        await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
         try:
@@ -93,33 +105,47 @@ class WsClientConnection(object):
             auth = msg_dict.get('auth', '')
         except Exception:
             auth = ''
-        # Parse the auth context using the given string (usually a JWT).
         auth_context = self._auth_manager.get_auth_context(auth)
-        auth_token = self._auth_manager.generate_auth_jwt('')
-        await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
 
+        # At this point, we are connected and authenticated, so clear the
+        # connection_closed event.
+        self._connection_closed.clear()
         state = await self.context.add_outgoing_connection(
             self.cxn_id, self, auth_context=auth_context,
             other_url=self.url)
-        asyncio.create_task(self._run())
-        self._is_connected.set()
+        asyncio.create_task(self._run_read_loop())
         self._state = state
         return state
 
-    async def _run(self):
+    async def _run_read_loop(self):
         # After connecting, listen for messages until the connection closes.
-        try:
-            while True:
-                msg = await self.cxn.read_message()
-                if msg is None:
-                    return
-                asyncio.create_task(self.state.on_message(msg))
-        finally:
-            await self.context.remove_connection(self.cxn_id)
-            self._is_connected.clear()
+        while True:
+            msg = await self.cxn.read_message()
+            if msg is None:
+                # Implies the connection should be closed.
+                self._connection_closed.set()
+                return
+            asyncio.create_task(self.state.on_message(msg))
 
     async def write_message(self, msg, binary=False):
         await self._cxn.write_message(msg, binary=binary)
+
+    async def _run_connection(self):
+        try:
+            await self.open()
+            await self._run_read_loop()
+        except Exception as exc:
+            logger.warning("Could not connect %s -- Reason: %s",
+                           self.url, exc)
+        finally:
+            # Set this event if it weren't set already.
+            self._connection_closed.set()
+            await self.context.remove_connection(self.cxn_id)
+
+    async def run(self):
+        while True:
+            await self._run_connection()
+            await asyncio.sleep(5)
 
 
 class WsServerHandler(websocket.WebSocketHandler):
@@ -136,6 +162,9 @@ class WsServerHandler(websocket.WebSocketHandler):
         self.client_port = None
         self.cxn_id = None
         self._handshake_complete = False
+        # No need to set this event now because the connection is in the
+        # process of opening if this is called.
+        self._connection_closed = asyncio.Event()
 
     @property
     def context(self):
@@ -146,11 +175,16 @@ class WsServerHandler(websocket.WebSocketHandler):
         return self._state
 
     @property
+    def connection_closed_event(self):
+        return self._connection_closed
+
+    @property
     def url(self):
         return u'{}:{}'.format(self.client_ip, self.client_port)
 
     def on_close(self):
         try:
+            self._connection_closed.set()
             logger.info("Closing client CXN with ID: %s", self.cxn_id)
             context = self.context
             if context:
@@ -165,6 +199,8 @@ class WsServerHandler(websocket.WebSocketHandler):
                 self._handshake_complete = True
             except Exception:
                 logger.error("Authentication Handshake failed!")
+                if self.context.debug > 0:
+                    logger.exception("Authentication Handshake error:")
                 # Close the connection, since something failed.
                 self.close()
             return
@@ -178,6 +214,18 @@ class WsServerHandler(websocket.WebSocketHandler):
         # Since it is the client that chose to connect to us, send a JWT
         # token with the current state of this server. (If not configured,
         # it is okay to send an empty response.)
+        # try:
+        #     token = self.context.auth_manager.generate_auth_jwt('test')
+        #     await self.write_message(dict(auth=token))
+        # except Exception:
+        #     logger.exception("Error trying to open connection! Closing...")
+        #     self.close()
+        pass
+
+    async def _open_client_response(self, message):
+        auth_info = json.loads(message)
+        auth = auth_info.get('auth', '')
+
         try:
             token = self.context.auth_manager.generate_auth_jwt('test')
             await self.write_message(dict(auth=token))
@@ -185,23 +233,22 @@ class WsServerHandler(websocket.WebSocketHandler):
             logger.exception("Error trying to open connection! Closing...")
             self.close()
 
-    async def _open_client_response(self, message):
-        auth_info = json.loads(message)
-        auth = auth_info.get('auth', '')
-
         # Check the authentication of this request.
         auth_context = self.context.auth_manager.get_auth_context(auth)
 
         # At this point, the authentication context should be set. Continue
         # with the rest of the handshake and start handling requests.
-        if self.request.connection.stream is None:
-            args = self.request.connection.context.address
-            url = "{}:{}".format(*args)
-        else:
-            url = "{}:{}".format(
-                self.request.remote_ip,
-                self.request.connection.stream.socket.getpeername()[1]
-            )
+        try:
+            if self.request.connection.stream is None:
+                args = self.request.connection.context.address
+                url = "{}:{}".format(*args)
+            else:
+                url = "{}:{}".format(
+                    self.request.remote_ip,
+                    self.request.connection.stream.socket.getpeername()[1]
+                )
+        except Exception:
+            url = 'unix_socket'
 
         self.cxn_id = generate_connection_id()
         self._state = await self.context.add_incoming_connection(
@@ -261,15 +308,6 @@ class WsContext(object):
     def auth_manager(self):
         """Return the AuthManager for this websocket."""
         return self._auth_manager
-
-    def generate_current_auth_jwt(self, msg):
-        """Generate a JWT used to verify/authenticate this WsContext.
-
-        The resulting token is sent during an authentication request and should
-        be signed as appropriate. The resulting JWT token should only be valid
-        for a very short time window, since it is (basically) one-time use.
-        """
-        return ''
 
     async def add_incoming_connection(
             self, cxn_id, cxn, auth_context=None, other_url=None):
@@ -366,6 +404,18 @@ class WebsocketState(object):
     @property
     def auth_context(self):
         return self._auth_context
+
+    @property
+    def is_connected(self):
+        if self.connection_closed_event:
+            return not self.connection_closed_event.is_set()
+        return False
+
+    @property
+    def connection_closed_event(self):
+        if self.connection:
+            return self.connection.connection_closed_event
+        return None
 
     @property
     def debug(self):

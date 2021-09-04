@@ -1,0 +1,60 @@
+
+# wsproxy configuration file.
+---
+logging:
+  # Set the output for the logger. If 'stderr', then write to stderr.
+  file: stderr
+
+# Set as a (nonnegative) integer. Higher numbers imply more verbose
+# output. Currently, this goes up to 3.
+debug: 0
+
+# Auth Configuration
+#
+# Configuration options to authenticate this server and client.
+auth:
+  username: admin
+  password: random-config
+
+# Server Configuration
+#
+# Configuration options when running as a server. The server is only
+# enabled if the 'enabled' key is true.
+server:
+  # If false, the server is disabled entirely.
+  enabled: true
+
+  # Port to run the server on.
+  port: 8080
+
+  # Optionally listen on a UNIX socket as well. The `$(pid)` will be
+  # substituted with the process ID of the server when spawned.
+  unix_socket: "/tmp/wsproxy.sock"
+
+  # Configure the SSL options for the server.
+  ssl:
+    # If true, SSL is enabled, otherwise no.
+    enabled: false
+
+    # Certificate options. Relative paths are assumed to be with respect to
+    # the location of this configuration file.
+    cert_path: "cert.crt"
+    key_path: "server.key"
+
+
+# # Client Configuration
+# #
+# # Configuration options when running as a client (when this wsproxy
+# # instance will attempt to connect to another wsproxy server). Unlike
+# # the server options, multiple clients can be configured.
+# clients:
+#  -  client:
+#     enabled: true
+#     url: "wss://wsproxyserver.com"
+#     ssl:
+#       enabled: true
+#       cert_path: "/path/to/verify/cert"
+#       # Set to true to include verifying the host as a part of the
+#       # validation.
+#       verify_host: false
+

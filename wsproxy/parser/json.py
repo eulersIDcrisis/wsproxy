@@ -117,11 +117,8 @@ class JsonParser(object):
     # is clearly the first character of a JSON object.
     opcode = ord('{')
 
-    def __init__(self, route_list):
-        self.__route_mapping = {
-            route.name: route
-            for route in route_list
-        }
+    def __init__(self, route_mapping):
+        self.__route_mapping = route_mapping
 
     @property
     def route_mapping(self):
@@ -207,12 +204,15 @@ class JsonParser(object):
             # For the other route types, there will be a "route" and optional
             # "args" field.
             route = res['route']
-            args = res.get('args')
+            args = res.get('args', {})
 
             if state.msg_mapping.get(msg_id):
                 raise Exception(
                     "Existing handler already exists with Msg ID: %s",
                     msg_id)
+
+            # Will raise a not authorized exception if invalid.
+            state.auth_context.check_json_route(route)
 
             handler = self.route_mapping[route]
             endpoint = Endpoint(
@@ -221,9 +221,6 @@ class JsonParser(object):
             sub = asyncio.create_task(handler(endpoint, args))
             # sub = asyncio.create_task(handler(state, msg_id, msg_type, args))
             state.msg_mapping[msg_id] = (sub, endpoint)
-
-            # Will raise a not authorized exception if invalid.
-            state.auth_context.check_json_route(route)
 
             return
         except websocket.WebSocketClosedError:
