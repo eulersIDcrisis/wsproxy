@@ -212,7 +212,7 @@ class JsonParser(object):
                     msg_id)
 
             # Will raise a not authorized exception if invalid.
-            state.auth_context.check_json_route(route)
+            state.auth_manager.check_json_route(route)
 
             handler = self.route_mapping[route]
             endpoint = Endpoint(

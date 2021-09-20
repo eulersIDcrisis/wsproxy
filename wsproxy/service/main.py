@@ -14,7 +14,7 @@ import argparse
 from urllib.parse import urlsplit, urlunsplit
 import yaml
 from tornado import web, httpserver, httpclient, netutil, ioloop
-from wsproxy import core, util
+from wsproxy import core, util, auth
 from wsproxy.parser.json import once
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
@@ -58,6 +58,32 @@ def _create_admin_socket(context, path=None):
     return unix_server
 
 
+def _parse_auth_manager(options):
+    """Parse out the auth manager for a particular set of options."""
+    manager = None
+    auth_options = options.get('auth', dict())
+    if not auth_options:
+        return None
+
+    auth_type = auth_options.get('type', 'basic').lower()
+
+    # By default, do not permit localhost or any private subnets. This options
+    # will override the other filters explicitly.
+    permit_localhost = auth_options.get('permit_localhost', False)
+    permit_private_subnets = auth_options.get('permit_private_subnets', False)
+    # TODO -- Parse out explicit IPs and ports
+    kwargs = dict(
+        permit_localhost=permit_localhost,
+        permit_private_subnets=permit_private_subnets)
+
+    if auth_type == 'basic':
+        subject = auth_options.get('username')
+        password = auth_options.get('password')
+        manager = auth.BasicPasswordAuthManager(subject, password, **kwargs)
+
+    return manager
+
+
 def _parse_server_options(context, server_options):
     servers = []
     # TODO -- permit configuring which routes are allowed.
@@ -77,6 +103,13 @@ def _parse_server_options(context, server_options):
     else:
         ssl_ctx = None
         logger.warning("SSL DISABLED")
+
+    # Parse the permitted clients for this server.
+    for client in server_options.get('clients', []):
+        manager = _parse_auth_manager(client)
+        if not manager:
+            continue
+        context.auth_context.add_auth_manager(manager)
 
     routes = [
         (r'/ws', core.WsServerHandler, dict(context=context)),
@@ -120,21 +153,17 @@ def _parse_client_options(context, client_options):
 
 def run_with_options(options):
     debug = options.get('debug', 0)
-    username = options.get('username', 'admin')
-    password = options.get('password', 'password')
-
-    # auth_options = options.get('auth', {})
-    # username = auth_options.get('username', 'admin')
-    # password = auth_options.get('password', 'password')
-
-    # Parse the auth manager.
-    auth_manager = BasicPasswordAuthFactory(
-        username, password
-    ).create_auth_manager()
+    # These are the main username/password fields for this user, not for
+    # other users that could authenticate with this instance.
+    auth_manager = _parse_auth_manager(options)
+    if not auth_manager:
+        raise Exception("No root user configured!")
+    auth_context = auth.AuthContext(auth_manager)
+    auth_context.add_auth_manager(auth_manager)
 
     # Setup the routes.
     route_mapping = route_registry.get_route_mapping()
-    context = core.WsContext(auth_manager, route_mapping, debug=debug)
+    context = core.WsContext(auth_context, route_mapping, debug=debug)
 
     # Parse server options.
     servers = []
@@ -172,8 +201,10 @@ def run_with_options(options):
 
 def run_admin_mode(options):
     url = options.get('url', u'unix://unix_localhost/tmp/wsproxy.sock')
-    user = options.get('username', '')
-    password = options.get('password', '')
+    auth_manager = _parse_auth_manager(options)
+    if not auth_manager:
+        print('Error: no authentication credentials parsed!')
+        return
 
     # Parse the URL and handle the case if it is 'unix://'
     scheme, netloc, path, _, _ = urlsplit(url)
@@ -184,11 +215,10 @@ def run_admin_mode(options):
         )
         url = urlunsplit(('ws', 'unix_localhost', '/ws', '', ''))
 
-    auth_manager = BasicPasswordAuthFactory(
-        user, password
-    ).create_auth_manager()
     routes = route_registry.get_route_mapping()
-    context = core.WsContext(auth_manager, routes)
+    auth_context = auth.AuthContext(auth_manager)
+    auth_context.add_auth_manager(auth_manager)
+    context = core.WsContext(auth_context, routes)
 
     cert_path = options.get('cert_path')
     if cert_path:
@@ -269,10 +299,10 @@ def main():
         parents=[parent_parser])
     admin_parser.set_defaults(func=run_admin_mode)
     admin_parser.add_argument(
-        '-u', '--user', type=str, default=None, dest='username',
+        '-u', '--user', type=str, default=None, dest='auth_username',
         help='Username for login. (Default parsed from config file.)')
     admin_parser.add_argument(
-        '-p', '--password', type=str, default=None, dest='password',
+        '-p', '--password', type=str, default=None, dest='auth_password',
         help='Password for login. (Default parsed from config file.)')
     admin_parser.add_argument(
         '--url', type=str, default=None, help='Connect using the given URL.')
@@ -303,6 +333,7 @@ def main():
     skip_option_set = set(['cmd_name', 'cmd'])
 
     # Merge the CLI options with the parsed config.
+    auth_options = options.get('auth', dict())
     for option, value in option_overrides.items():
         # Skip these options which do not pertain to anything parsable.
         if option in skip_option_set:
@@ -310,7 +341,12 @@ def main():
         # Skip these options as well (which implies they were not set).
         if value is None:
             continue
+        # Parse out the auth options separately.
+        if option.startswith('auth_'):
+            auth_options[option[5:]] = value
         options[option] = value
+
+    options['auth'] = auth_options
 
     debug = option_overrides.get('debug')
     if debug is not None:

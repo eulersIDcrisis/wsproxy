@@ -72,7 +72,7 @@ async def connection_info_subscription(endpoint, args):
         result = {
             'connections': {
                 str(cxn_id): dict(
-                    user=state.auth_context.user,
+                    user=state.auth_manager.get_subject(),
                     url=state.other_url
                 )
                 for cxn_id, state in context.connection_mapping.items()

@@ -37,7 +37,7 @@ class WsClientConnection(object):
     available. The process is TBD.
     """
 
-    def __init__(self, context, url_or_request, override_auth_manager=None):
+    def __init__(self, context, url_or_request, override_auth_context=None):
         """Create a WsClientConnection object.
 
         This object is responsible for managing the state of a connection to
@@ -48,11 +48,11 @@ class WsClientConnection(object):
         ----------
         context: WsContext
             The websocket context with the routes and auth manager to use.
-        auth_manager: AuthManager
-            The auth manager to resolve auth contexts for a given connection.
         url_or_request: str or tornado.httpclient.HTTPRequest
             The request information to use. If only a string is passed, then
             the string is assumed to be the URL.
+        auth_context: AuthContext (optional)
+            The AuthContext to handle a given connection.
         """
         self.cxn_id = generate_connection_id()
 
@@ -68,11 +68,14 @@ class WsClientConnection(object):
 
         self.context = context
 
-        self._auth_manager = self.context.auth_manager
+        self._auth_context = self.context.auth_context
 
         # Connection starts out as closed, so set the event.
         self._connection_closed = asyncio.Event()
         self._connection_closed.set()
+
+        # Websocket state
+        self._state = None
 
     @property
     def is_connected(self):
@@ -96,7 +99,7 @@ class WsClientConnection(object):
             ping_interval=12, ping_timeout=60)
 
         # Parse the auth context using the given string (usually a JWT).
-        auth_token = self._auth_manager.generate_auth_jwt('text')
+        auth_token = self.context.auth_context.generate_auth_jwt('text')
         await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
@@ -105,17 +108,19 @@ class WsClientConnection(object):
             auth = msg_dict.get('auth', '')
         except Exception:
             auth = ''
-        auth_context = self._auth_manager.get_auth_context(auth)
+
+        auth_manager = self._auth_context.authenticate(auth)
+
+        self._state = await self.context.add_outgoing_connection(
+            self.cxn_id, self, auth_manager=auth_manager,
+            other_url=self.url)
 
         # At this point, we are connected and authenticated, so clear the
         # connection_closed event.
         self._connection_closed.clear()
-        state = await self.context.add_outgoing_connection(
-            self.cxn_id, self, auth_context=auth_context,
-            other_url=self.url)
+
         asyncio.create_task(self._run_read_loop())
-        self._state = state
-        return state
+        return self._state
 
     async def _run_read_loop(self):
         # After connecting, listen for messages until the connection closes.
@@ -134,6 +139,9 @@ class WsClientConnection(object):
         try:
             await self.open()
             await self._run_read_loop()
+        # except NotAuthorized:
+        #     logger.exception("Request was not authorized! Exiting...")
+        #     return
         except Exception as exc:
             logger.warning("Could not connect %s -- Reason: %s",
                            self.url, exc)
@@ -220,21 +228,20 @@ class WsServerHandler(websocket.WebSocketHandler):
         # except Exception:
         #     logger.exception("Error trying to open connection! Closing...")
         #     self.close()
-        pass
 
     async def _open_client_response(self, message):
         auth_info = json.loads(message)
         auth = auth_info.get('auth', '')
 
         try:
-            token = self.context.auth_manager.generate_auth_jwt('test')
+            token = self.context.auth_context.generate_auth_jwt('test')
             await self.write_message(dict(auth=token))
         except Exception:
             logger.exception("Error trying to open connection! Closing...")
             self.close()
 
         # Check the authentication of this request.
-        auth_context = self.context.auth_manager.get_auth_context(auth)
+        auth_manager = self.context.auth_context.authenticate(auth)
 
         # At this point, the authentication context should be set. Continue
         # with the rest of the handshake and start handling requests.
@@ -252,7 +259,7 @@ class WsServerHandler(websocket.WebSocketHandler):
 
         self.cxn_id = generate_connection_id()
         self._state = await self.context.add_incoming_connection(
-            self.cxn_id, self, auth_context=auth_context, other_url=url)
+            self.cxn_id, self, auth_manager=auth_manager, other_url=url)
         logger.info("Client CXN (ID: %s) received from: %s", self.cxn_id,
                     self._state.other_url)
         logger.info("Received at URL: %s", self.request.full_url())
@@ -264,7 +271,7 @@ class WsServerHandler(websocket.WebSocketHandler):
 class WsContext(object):
     """Context that stores the current connections for the app."""
 
-    def __init__(self, auth_manager, json_route_mapping, other_parsers=None,
+    def __init__(self, auth_context, json_route_mapping, other_parsers=None,
                  debug=0):
         """Create a WsContext with the given JSON routes, and optional opcode parsers.
 
@@ -302,26 +309,22 @@ class WsContext(object):
         self._debug = debug
 
         # Store the auth manager here.
-        self._auth_manager = auth_manager
+        self._auth_context = auth_context
 
     @property
-    def auth_manager(self):
-        """Return the AuthManager for this websocket."""
-        return self._auth_manager
+    def auth_context(self):
+        """Return the AuthContext for this websocket."""
+        return self._auth_context
 
     async def add_incoming_connection(
-            self, cxn_id, cxn, auth_context=None, other_url=None):
+            self, cxn_id, cxn, auth_manager=None, other_url=None):
         """Create the new connection and add it.
 
         Returns the WebsocketState for this connection.
         """
-        # Create the Auth manager for this connection.
-        if auth_context is None:
-            auth_context = self.auth_manager.get_default_auth_context()
-
         # Create the WebsocketState
         state = WebsocketState(
-            self, cxn, auth_context, other_url=other_url, prefix='I')
+            self, cxn, auth_manager, other_url=other_url, prefix='I')
         async with self._cond:
             self._cxn_mapping[cxn_id] = state
             self._cond.notify_all()
@@ -335,12 +338,9 @@ class WsContext(object):
             await state.close()
 
     async def add_outgoing_connection(
-            self, cxn_id, cxn, auth_context=None, other_url=None):
-        if auth_context is None:
-            auth_context = self.auth_manager.get_default_auth_context()
-
+            self, cxn_id, cxn, auth_manager=None, other_url=None):
         state = WebsocketState(
-            self, cxn, auth_context, other_url=other_url, prefix='O')
+            self, cxn, auth_manager, other_url=other_url, prefix='O')
         async with self._cond:
             self._cxn_mapping[cxn_id] = state
         return state
@@ -374,10 +374,10 @@ class WebsocketState(object):
     with some message ID.
     """
 
-    def __init__(self, context, connection, auth_context, other_url=None, prefix='N'):
+    def __init__(self, context, connection, auth_manager, other_url=None, prefix='N'):
         self._context = weakref.ref(context)
         self._connection = connection
-        self._auth_context = auth_context
+        self._auth_manager = auth_manager
         self._other_url = other_url
         self._prefix = prefix
         self._next_id = 0
@@ -402,8 +402,8 @@ class WebsocketState(object):
         return None
 
     @property
-    def auth_context(self):
-        return self._auth_context
+    def auth_manager(self):
+        return self._auth_manager
 
     @property
     def is_connected(self):
