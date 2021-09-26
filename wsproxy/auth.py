@@ -7,6 +7,7 @@ authentication with wsproxy.
 """
 from abc import ABCMeta, abstractmethod
 import datetime
+import asyncio
 import jwt
 
 
@@ -26,6 +27,11 @@ class AuthManager(metaclass=ABCMeta):
         self._permit_localhost = permit_localhost
         self._permit_private_subnets = permit_private_subnets
 
+        # Handlers to invoke for this particular user. This is tracked here
+        # since what to do likely depends on user. Each handler should be a
+        # async function/coroutine that accepts a WebsocketState argument.
+        self._init_handlers = []
+
     def check_json_route(self, route):
         if self._json_routes is ALL:
             return True
@@ -33,6 +39,16 @@ class AuthManager(metaclass=ABCMeta):
 
     def check_proxy_request(self, host, port, protocol):
         raise NotAuthorized()
+
+    def add_init_handler(self, handler):
+        """Add a coroutine to invoke whenever this user logs in."""
+        self._init_handlers.append(handler)
+
+    async def run_initial_handlers(self, state):
+        """Run any registered init handlers for this User/AuthManager."""
+        await asyncio.gather(*[
+            handler(state) for handler in self._init_handlers
+        ])
 
     @abstractmethod
     def get_subject(self):
