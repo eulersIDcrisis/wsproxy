@@ -112,9 +112,9 @@ class RawProxyStreamHandler(object):
 class ProxySocket(object):
     """Manage sending and receiving data from a proxied socket."""
 
-    def __init__(self, state, local_stream, host, port,
+    def __init__(self, endpoint, local_stream, host, port,
                  protocol='tcp', buffsize=DEFAULT_BUFFSIZE):
-        self.state = state
+        self.state = endpoint.state
         # Requested destination details.
         self.protocol = protocol
         self.host = host
@@ -254,7 +254,7 @@ async def proxy_socket_subscription(endpoint, args):
         assert protocol.lower() == 'tcp'
 
         # Check the proxy request against the current auth manager.
-        endpoint.state.auth_context.check_proxy_request(host, port, protocol)
+        endpoint.state.auth_manager.check_proxy_request(host, port, protocol)
     except KeyError as ke:
         await endpoint.error(dict(message="Missing or Invalid field: {}".format(ke)))
         return

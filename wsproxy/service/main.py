@@ -16,7 +16,7 @@ import yaml
 import click
 from tornado import web, httpserver, httpclient, netutil, ioloop
 from wsproxy import core, util, auth
-from wsproxy.parser.json import once
+from wsproxy.parser.json import once, setup_subscription
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
 from wsproxy.service.config import get_default_config_file_contents
@@ -162,6 +162,8 @@ async def run_list_command(cxn):
     res = await once(cxn.state, 'connection_info', dict())
     stm = click.get_text_stream('stdout')
     json.dump(res, stm, indent=2)
+    # Add a newline at the end for good measure.
+    click.echo('')
 
 
 pass_admin_context = click.pass_obj
@@ -182,10 +184,13 @@ def list_command(admin_context):
 
 
 async def run_socks_proxy(cxn, port):
+    args = dict(port=port)
     await cxn.open()
-    sub = await setup_subscription(cxn.state, 'socks5_proxy', args)
-    async for msg in sub:
-        click.echo(msg)
+    async with setup_subscription(
+        cxn.state, 'socks5_proxy', args
+    ) as sub:
+        async for msg in sub.result_generator():
+            click.echo(msg)
 
 
 @admin_cli.command('socks5', help=(
@@ -194,7 +199,15 @@ async def run_socks_proxy(cxn, port):
 @click.argument('socks_port', type=click.IntRange(0, 65535))
 @pass_admin_context
 def socks5_command(admin_context, socks_port):
-    click.echo(admin_context)
+    cxn = admin_context.get_connection()
+    try:
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(run_socks_proxy(cxn, socks_port))
+        loop.run_until_complete(task)
+    except Exception:
+        logger.exception("Error running command!")
+    finally:
+        loop.close()
 
 
 def _create_admin_socket(context, path=None):
@@ -352,70 +365,6 @@ def run_with_options(options):
         loop.close()
     except Exception:
         logger.exception('Error running event loop!')
-
-
-def run_admin_mode(options):
-    url = options.get('url', u'unix://unix_localhost/tmp/wsproxy.sock')
-    auth_manager = _parse_auth_manager(options)
-    if not auth_manager:
-        print('Error: no authentication credentials parsed!')
-        return
-
-    # Parse the URL and handle the case if it is 'unix://'
-    scheme, netloc, path, _, _ = urlsplit(url)
-    if scheme.startswith(u'unix'):
-        resolver = netutil.Resolver()
-        netutil.Resolver.configure(
-            UnixResolver, resolver=resolver, unix_socket=path
-        )
-        url = urlunsplit(('ws', 'unix_localhost', '/ws', '', ''))
-
-    routes = route_registry.get_route_mapping()
-    auth_context = auth.AuthContext(auth_manager)
-    auth_context.add_auth_manager(auth_manager)
-    context = core.WsContext(auth_context, routes)
-
-    cert_path = options.get('cert_path')
-    if cert_path:
-        import ssl
-
-        verify_host = options.get('verify_host', True)
-
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-        ssl_context.check_hostname = verify_host
-        ssl_context.load_verify_locations(cert_path)
-        logger.info('Using cert chain: %s (verify host: %s)',
-                    cert_path, 'True' if verify_host else 'False')
-    else:
-        ssl_context = None
-
-    request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
-    cxn = core.WsClientConnection(context, request)
-    try:
-        loop = asyncio.new_event_loop()
-        task = loop.create_task(_run_admin_command(cxn, 'list'))
-        loop.run_until_complete(task)
-    except Exception:
-        logger.exception("Error running command!")
-    finally:
-        loop.close()
-
-
-async def _run_admin_command(cxn, cmd):
-    await cxn.open()
-    print("Running cmd: {}".format(cmd))
-    args = tuple()
-    if cmd == 'list':
-        res = await once(cxn.state, 'connection_info', args)
-        print(json.dumps(res, indent=2))
-        return
-    if cmd == 'socks5':
-        async with setup_subscription(
-            cxn.state, 'socks5_proxy', args
-        ) as sub:
-            async for msg in sub.result_generator():
-                print("Received: {}".format(msg))
 
 
 def main():

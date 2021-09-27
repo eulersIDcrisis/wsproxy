@@ -38,7 +38,8 @@ class AuthManager(metaclass=ABCMeta):
         return bool(route in self._json_routes)
 
     def check_proxy_request(self, host, port, protocol):
-        raise NotAuthorized()
+        return True
+        # raise NotAuthorized()
 
     def add_init_handler(self, handler):
         """Add a coroutine to invoke whenever this user logs in."""
