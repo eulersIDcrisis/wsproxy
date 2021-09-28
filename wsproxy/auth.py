@@ -39,7 +39,6 @@ class AuthManager(metaclass=ABCMeta):
 
     def check_proxy_request(self, host, port, protocol):
         return True
-        # raise NotAuthorized()
 
     def add_init_handler(self, handler):
         """Add a coroutine to invoke whenever this user logs in."""
@@ -77,6 +76,9 @@ class NoAccessAuthManager(AuthManager):
     def __init__(self, subject):
         super(NoAccessAuthManager, self).__init__()
         self.subject = subject
+
+    def check_proxy_request(self, host, port, protocol):
+        raise NotAuthorized('Authentication failed!')
 
     def authenticate(self, token):
         raise NotAuthorized('Authentication failed!')

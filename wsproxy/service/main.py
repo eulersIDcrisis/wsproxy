@@ -133,11 +133,11 @@ class AdminContext(object):
 @click.option('-w', '--password', type=str, help=(
     "Password for wsproxy. This overrides the same setting in the config "
     "file."
-))
+), prompt=True, prompt_required=False)
 @click.pass_context
 def admin_cli(ctx, url, config, user, password):
     if config:
-        with open(config, 'r') as stm:
+        with open(config, 'rb') as stm:
             options = yaml.safe_load(stm)
         # Store the configuration with the context, after checking the other
         # options. This should permit various different forms of auth later.
