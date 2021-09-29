@@ -123,6 +123,9 @@ class AdminContext(object):
 
 
 @main_cli.group('admin', help="Run administrative commands for wsproxy.")
+@click.option('-v', '--verbose', count=True, help=(
+    "Enable verbose output. This option stacks for increasing verbosity."
+), default=None)
 @click.option('-c', '--config', type=click.Path(
     exists=True, file_okay=True, readable=True))
 @click.option('--url', type=str, help="URL to connect to.")
@@ -130,12 +133,24 @@ class AdminContext(object):
     "Username for wsproxy. This overrides the same setting in the config "
     "file."
 ))
-@click.option('-w', '--password', type=str, help=(
+@click.option('-P', '--password', type=str, help=(
     "Password for wsproxy. This overrides the same setting in the config "
-    "file."
-), prompt=True, prompt_required=False)
+    "file. To manually prompt for the password, use -W instead."
+))
+@click.option('-W', '--prompt-for-password', flag_value=True,
+              help="Prompt for the password.")
+@click.option('-k', '--insecure', flag_value=True, help=(
+    "Ignore any SSL certificate errors. "
+    "WARNING: This is insecure against MITM attacks!"))
+@click.option('-E', '--cert', help=(
+    "Use the given certificate when validating the connection. "
+    "This is especially useful when the wsproxy server is configured "
+    "to use its own custom self-signed certificate. This can help "
+    "prevent Man-In-The-Middle attacks."
+), type=click.Path(exists=True, file_okay=True, readable=True))
 @click.pass_context
-def admin_cli(ctx, url, config, user, password):
+def admin_cli(ctx, url, config, user, password, insecure, cert, verbose,
+              prompt_for_password):
     if config:
         with open(config, 'rb') as stm:
             options = yaml.safe_load(stm)
@@ -150,6 +165,17 @@ def admin_cli(ctx, url, config, user, password):
         options['auth']['username'] = user
     if password:
         options['auth']['password'] = password
+    # This implies to prompt for the password via stdin or the terminal.
+    if prompt_for_password:
+        password = click.prompt("Password: ", hide_input=True)
+        options['auth']['password'] = password
+    if verbose is not None:
+        options['debug'] = verbose
+
+    if cert:
+        options['cert_path'] = cert
+    if insecure:
+        options['verify_host'] = False
 
     if not url:
         url = 'unix://unix_localhost/tmp/wsproxy.sock'
@@ -367,112 +393,5 @@ def run_with_options(options):
         logger.exception('Error running event loop!')
 
 
-def main():
-    default_config = '/etc/wsproxy/config.yml'
-
-    parent_parser = argparse.ArgumentParser(add_help=False)
-    global_options = parent_parser.add_argument_group(
-        title="Global Options")
-    # Set the default configuration file path.
-    global_options.add_argument(
-        '-c', '--config', type=str, default=default_config,
-        help='Config file to run the server. (default: %(default)s)')
-    global_options.add_argument(
-        '-v', '--verbose', action='count', default=0, dest='debug',
-        help='Enable more verbose output.')
-    global_options.add_argument(
-        '--version', action='version', version=WSPROXY_VERSION)
-
-    parser = argparse.ArgumentParser(
-        parents=[parent_parser],
-        description='Run and manage a websocket proxy.')
-
-    subparsers = parser.add_subparsers(
-        title='Available Commands', help='Additional Help', dest='cmd_name',
-        description='Commands to run and manage existing websocket proxies.')
-
-    run_parser = subparsers.add_parser(
-        'run', help='Run wsproxy server/client.', parents=[parent_parser])
-    run_parser.set_defaults(func=run_with_options)
-    run_parser.add_argument(
-        '--generate-default', action='store_true', dest='generate',
-        help='Generate a default configuration file and print to stdout.')
-
-    admin_parser = subparsers.add_parser(
-        'admin', help='Manage running wsproxy server.',
-        parents=[parent_parser])
-    admin_parser.set_defaults(func=run_admin_mode)
-    admin_parser.add_argument(
-        '-u', '--user', type=str, default=None, dest='auth_username',
-        help='Username for login. (Default parsed from config file.)')
-    admin_parser.add_argument(
-        '-p', '--password', type=str, default=None, dest='auth_password',
-        help='Password for login. (Default parsed from config file.)')
-    admin_parser.add_argument(
-        '--url', type=str, default=None, help='Connect using the given URL.')
-    admin_parser.add_argument(
-        '--no-ssl', action='store_true',
-        help=('Permit connecting without SSL. Careful, as this can send auth '
-              'without encryption.'))
-    admin_cmds = admin_parser.add_subparsers(
-        title='Administration Commands', dest='cmd')
-    admin_cmds.add_parser('list', help='List current connections.')
-
-    socks5_parser = admin_cmds.add_parser(
-        'socks5', help='Setup a SOCKS5 proxy for the given client.')
-    socks5_parser.add_argument('cxn_id', help=(
-        'Connection ID to tunnel the SOCKS proxy through..'))
-    socks5_parser.add_argument(
-        'port', type=int, help='The port to run the SOCKS server on.')
-
-    args = parser.parse_args()
-    if not getattr(args, 'func', None):
-        parser.print_help()
-        sys.exit(1)
-        return
-
-    try:
-        with open(args.config, 'r') as stm:
-            options = yaml.safe_load(stm)
-    except Exception:
-        options = {}
-
-    # Add the command line overrides.
-    option_overrides = vars(args)
-    skip_option_set = set(['cmd_name', 'cmd'])
-
-    # Merge the CLI options with the parsed config.
-    auth_options = options.get('auth', dict())
-    for option, value in option_overrides.items():
-        # Skip these options which do not pertain to anything parsable.
-        if option in skip_option_set:
-            continue
-        # Skip these options as well (which implies they were not set).
-        if value is None:
-            continue
-        # Parse out the auth options separately.
-        if option.startswith('auth_'):
-            auth_options[option[5:]] = value
-        options[option] = value
-
-    options['auth'] = auth_options
-
-    debug = option_overrides.get('debug')
-    if debug is not None:
-        options['debug'] = debug
-
-    # Initialize the logger.
-    level = logging.DEBUG if options.get(debug, 0) > 0 else logging.INFO
-    handlers = []
-    handlers.append(logging.StreamHandler(sys.stderr))
-    # if args.log_file:
-    #     handlers.append(logging.FileHandler(args.log_file))
-    util.setup_default_logger(handlers, level)
-
-    # After overriding with the CLI options.
-    args.func(options)
-
-
 if __name__ == '__main__':
     main_cli()
-    # main()
