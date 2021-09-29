@@ -19,9 +19,12 @@ debug: 0
 
 # Auth Configuration
 #
-# Superuser authentication parameters here.
-username: admin
-password: password
+# Superuser authentication parameters here. These parameters identify
+# this wsproxy instance to other instances.
+auth:
+  type: basic
+  username: admin
+  password: password
 
 # Server Configuration
 #
@@ -34,10 +37,6 @@ server:
   # Port to run the server on.
   port: 8080
 
-  # Optionally listen on a UNIX socket as well. The `$(pid)` will be
-  # substituted with the process ID of the server when spawned.
-  unix_socket: "/tmp/wsproxy.$(pid)"
-
   # Configure the SSL options for the server.
   ssl:
     # If true, SSL is enabled, otherwise no.
@@ -46,6 +45,16 @@ server:
     # Certificate options.
     cert_path: "/path/to/cert.pem"
     key_path: "/path/to/cert.key"
+
+  # Configure access for different clients.
+  #
+  # NOTE: The superuser credentials can be used to authenticate access
+  # for other users.
+  clients:
+   - auth:
+     type: basic
+     username: admin
+     password: password
 
 # Client Configuration
 #
@@ -56,6 +65,13 @@ clients:
     # First client
  -  url: "wss://wsproxyserver.com"
     enabled: true
+    auth:
+      type: basic
+      username: client
+      password: password2
+
+    # Configure whether to use a custom certificate chain for this
+    # client's connection.
     ssl:
       enabled: true
       cert_path: "/path/to/verify/cert"

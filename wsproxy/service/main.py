@@ -13,16 +13,13 @@ import logging
 import argparse
 from urllib.parse import urlsplit, urlunsplit
 import yaml
+import click
 from tornado import web, httpserver, httpclient, netutil, ioloop
-from wsproxy import core, util
-from wsproxy.parser.json import once
+from wsproxy import core, util, auth
+from wsproxy.parser.json import once, setup_subscription
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
 from wsproxy.service.config import get_default_config_file_contents
-
-
-WSPROXY_VERSION = '0.1.0'
-logger = util.get_child_logger('main')
 
 
 class UnixResolver(netutil.Resolver):
@@ -42,6 +39,203 @@ class UnixResolver(netutil.Resolver):
         return result
 
 
+WSPROXY_VERSION = '0.1.0'
+logger = util.get_child_logger('main')
+
+
+def create_root_cli():
+    @click.group(context_settings=dict(
+        help_option_names=['-h', '--help']
+    ))
+    @click.version_option(WSPROXY_VERSION)
+    def _cli():
+        pass
+
+    return _cli
+
+
+main_cli = create_root_cli()
+
+
+@main_cli.command('run', help=(
+    "Run wsproxy server/client, using the given configuration file. "))
+@click.argument('config_file', type=click.Path(
+    exists=True, file_okay=True, readable=True))
+@click.option('-v', '--verbose', count=True, help=(
+    "Enable verbose output. This option stacks for increasing verbosity."))
+def run_cli(config_file, verbose):
+    # Parse
+    level = logging.DEBUG if verbose > 0 else logging.INFO
+    handlers = []
+    handlers.append(logging.StreamHandler(sys.stderr))
+    # if args.log_file:
+    #     handlers.append(logging.FileHandler(args.log_file))
+    util.setup_default_logger(handlers, level)
+
+    with open(config_file, 'r') as stm:
+        options = yaml.safe_load(stm)
+
+    run_with_options(options)
+
+
+class AdminContext(object):
+
+    def __init__(self, url='/tmp/wsproxy.sock', config_options=None):
+        self.url = u'{}'.format(url)
+        self.config_options = config_options if config_options else dict()
+
+    def get_connection(self):
+        auth_manager = _parse_auth_manager(self.config_options)
+        if not auth_manager:
+            raise Exception('Error: no authentication credentials parsed!')
+        url = self.url
+        # Parse the URL and handle the case if it is 'unix://'
+        scheme, netloc, path, _, _ = urlsplit(url)
+        if scheme.startswith(u'unix'):
+            resolver = netutil.Resolver()
+            netutil.Resolver.configure(
+                UnixResolver, resolver=resolver, unix_socket=path
+            )
+            url = urlunsplit(('ws', 'unix_localhost', '/ws', '', ''))
+
+        routes = route_registry.get_route_mapping()
+        auth_context = auth.AuthContext(auth_manager)
+        auth_context.add_auth_manager(auth_manager)
+        context = core.WsContext(auth_context, routes)
+
+        cert_path = self.config_options.get('cert_path')
+        if cert_path:
+            import ssl
+
+            verify_host = self.config_options.get('verify_host', True)
+
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+            ssl_context.check_hostname = verify_host
+            ssl_context.load_verify_locations(cert_path)
+            logger.info('Using cert chain: %s (verify host: %s)',
+                        cert_path, 'True' if verify_host else 'False')
+        else:
+            ssl_context = None
+
+        request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
+        return core.WsClientConnection(context, request)
+
+
+@main_cli.group('admin', help="Run administrative commands for wsproxy.")
+@click.option('-v', '--verbose', count=True, help=(
+    "Enable verbose output. This option stacks for increasing verbosity."
+), default=None)
+@click.option('-c', '--config', type=click.Path(
+    exists=True, file_okay=True, readable=True))
+@click.option('--url', type=str, help="URL to connect to.")
+@click.option('-u', '--user', type=str, help=(
+    "Username for wsproxy. This overrides the same setting in the config "
+    "file."
+))
+@click.option('-P', '--password', type=str, help=(
+    "Password for wsproxy. This overrides the same setting in the config "
+    "file. To manually prompt for the password, use -W instead."
+))
+@click.option('-W', '--prompt-for-password', flag_value=True,
+              help="Prompt for the password.")
+@click.option('-k', '--insecure', flag_value=True, help=(
+    "Ignore any SSL certificate errors. "
+    "WARNING: This is insecure against MITM attacks!"))
+@click.option('-E', '--cert', help=(
+    "Use the given certificate when validating the connection. "
+    "This is especially useful when the wsproxy server is configured "
+    "to use its own custom self-signed certificate. This can help "
+    "prevent Man-In-The-Middle attacks."
+), type=click.Path(exists=True, file_okay=True, readable=True))
+@click.pass_context
+def admin_cli(ctx, url, config, user, password, insecure, cert, verbose,
+              prompt_for_password):
+    if config:
+        with open(config, 'rb') as stm:
+            options = yaml.safe_load(stm)
+        # Store the configuration with the context, after checking the other
+        # options. This should permit various different forms of auth later.
+    else:
+        options = dict()
+
+    if 'auth' not in options:
+        options['auth'] = dict()
+    if user:
+        options['auth']['username'] = user
+    if password:
+        options['auth']['password'] = password
+    # This implies to prompt for the password via stdin or the terminal.
+    if prompt_for_password:
+        password = click.prompt("Password: ", hide_input=True)
+        options['auth']['password'] = password
+    if verbose is not None:
+        options['debug'] = verbose
+
+    if cert:
+        options['cert_path'] = cert
+    if insecure:
+        options['verify_host'] = False
+
+    if not url:
+        url = 'unix://unix_localhost/tmp/wsproxy.sock'
+
+    ctx.obj = AdminContext(url, options)
+
+
+async def run_list_command(cxn):
+    await cxn.open()
+    res = await once(cxn.state, 'connection_info', dict())
+    stm = click.get_text_stream('stdout')
+    json.dump(res, stm, indent=2)
+    # Add a newline at the end for good measure.
+    click.echo('')
+
+
+pass_admin_context = click.pass_obj
+
+
+@admin_cli.command('list', help="List connections for the given wsproxy.")
+@pass_admin_context
+def list_command(admin_context):
+    cxn = admin_context.get_connection()
+    try:
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(run_list_command(cxn))
+        loop.run_until_complete(task)
+    except Exception:
+        logger.exception("Error running command!")
+    finally:
+        loop.close()
+
+
+async def run_socks_proxy(cxn, port):
+    args = dict(port=port)
+    await cxn.open()
+    async with setup_subscription(
+        cxn.state, 'socks5_proxy', args
+    ) as sub:
+        async for msg in sub.result_generator():
+            click.echo(msg)
+
+
+@admin_cli.command('socks5', help=(
+    "Setup a Socks5 proxy to tunnel through the given wsproxy server. "
+))
+@click.argument('socks_port', type=click.IntRange(0, 65535))
+@pass_admin_context
+def socks5_command(admin_context, socks_port):
+    cxn = admin_context.get_connection()
+    try:
+        loop = asyncio.new_event_loop()
+        task = loop.create_task(run_socks_proxy(cxn, socks_port))
+        loop.run_until_complete(task)
+    except Exception:
+        logger.exception("Error running command!")
+    finally:
+        loop.close()
+
+
 def _create_admin_socket(context, path=None):
     path = path or '/tmp/wsproxy.sock'
 
@@ -56,6 +250,32 @@ def _create_admin_socket(context, path=None):
     unix_server.add_sockets([unix_socket])
     unix_server.start()
     return unix_server
+
+
+def _parse_auth_manager(options):
+    """Parse out the auth manager for a particular set of options."""
+    manager = None
+    auth_options = options.get('auth', dict())
+    if not auth_options:
+        return None
+
+    auth_type = auth_options.get('type', 'basic').lower()
+
+    # By default, do not permit localhost or any private subnets. This options
+    # will override the other filters explicitly.
+    permit_localhost = auth_options.get('permit_localhost', False)
+    permit_private_subnets = auth_options.get('permit_private_subnets', False)
+    # TODO -- Parse out explicit IPs and ports
+    kwargs = dict(
+        permit_localhost=permit_localhost,
+        permit_private_subnets=permit_private_subnets)
+
+    if auth_type == 'basic':
+        subject = auth_options.get('username')
+        password = auth_options.get('password')
+        manager = auth.BasicPasswordAuthManager(subject, password, **kwargs)
+
+    return manager
 
 
 def _parse_server_options(context, server_options):
@@ -77,6 +297,13 @@ def _parse_server_options(context, server_options):
     else:
         ssl_ctx = None
         logger.warning("SSL DISABLED")
+
+    # Parse the permitted clients for this server.
+    for client in server_options.get('clients', []):
+        manager = _parse_auth_manager(client)
+        if not manager:
+            continue
+        context.auth_context.add_auth_manager(manager)
 
     routes = [
         (r'/ws', core.WsServerHandler, dict(context=context)),
@@ -120,21 +347,17 @@ def _parse_client_options(context, client_options):
 
 def run_with_options(options):
     debug = options.get('debug', 0)
-    username = options.get('username', 'admin')
-    password = options.get('password', 'password')
-
-    # auth_options = options.get('auth', {})
-    # username = auth_options.get('username', 'admin')
-    # password = auth_options.get('password', 'password')
-
-    # Parse the auth manager.
-    auth_manager = BasicPasswordAuthFactory(
-        username, password
-    ).create_auth_manager()
+    # These are the main username/password fields for this user, not for
+    # other users that could authenticate with this instance.
+    auth_manager = _parse_auth_manager(options)
+    if not auth_manager:
+        raise Exception("No root user configured!")
+    auth_context = auth.AuthContext(auth_manager)
+    auth_context.add_auth_manager(auth_manager)
 
     # Setup the routes.
     route_mapping = route_registry.get_route_mapping()
-    context = core.WsContext(auth_manager, route_mapping, debug=debug)
+    context = core.WsContext(auth_context, route_mapping, debug=debug)
 
     # Parse server options.
     servers = []
@@ -170,163 +393,5 @@ def run_with_options(options):
         logger.exception('Error running event loop!')
 
 
-def run_admin_mode(options):
-    url = options.get('url', u'unix://unix_localhost/tmp/wsproxy.sock')
-    user = options.get('username', '')
-    password = options.get('password', '')
-
-    # Parse the URL and handle the case if it is 'unix://'
-    scheme, netloc, path, _, _ = urlsplit(url)
-    if scheme.startswith(u'unix'):
-        resolver = netutil.Resolver()
-        netutil.Resolver.configure(
-            UnixResolver, resolver=resolver, unix_socket=path
-        )
-        url = urlunsplit(('ws', 'unix_localhost', '/ws', '', ''))
-
-    auth_manager = BasicPasswordAuthFactory(
-        user, password
-    ).create_auth_manager()
-    routes = route_registry.get_route_mapping()
-    context = core.WsContext(auth_manager, routes)
-
-    cert_path = options.get('cert_path')
-    if cert_path:
-        import ssl
-
-        verify_host = options.get('verify_host', True)
-
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-        ssl_context.check_hostname = verify_host
-        ssl_context.load_verify_locations(cert_path)
-        logger.info('Using cert chain: %s (verify host: %s)',
-                    cert_path, 'True' if verify_host else 'False')
-    else:
-        ssl_context = None
-
-    request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
-    cxn = core.WsClientConnection(context, request)
-    try:
-        loop = asyncio.new_event_loop()
-        task = loop.create_task(_run_admin_command(cxn, 'list'))
-        loop.run_until_complete(task)
-    except Exception:
-        logger.exception("Error running command!")
-    finally:
-        loop.close()
-
-
-async def _run_admin_command(cxn, cmd):
-    await cxn.open()
-    print("Running cmd: {}".format(cmd))
-    args = tuple()
-    if cmd == 'list':
-        res = await once(cxn.state, 'connection_info', args)
-        print(json.dumps(res, indent=2))
-        return
-    if cmd == 'socks5':
-        async with setup_subscription(
-            cxn.state, 'socks5_proxy', args
-        ) as sub:
-            async for msg in sub.result_generator():
-                print("Received: {}".format(msg))
-
-
-def main():
-    default_config = '/etc/wsproxy/config.yml'
-
-    parent_parser = argparse.ArgumentParser(add_help=False)
-    global_options = parent_parser.add_argument_group(
-        title="Global Options")
-    # Set the default configuration file path.
-    global_options.add_argument(
-        '-c', '--config', type=str, default=default_config,
-        help='Config file to run the server. (default: %(default)s)')
-    global_options.add_argument(
-        '-v', '--verbose', action='count', default=0, dest='debug',
-        help='Enable more verbose output.')
-    global_options.add_argument(
-        '--version', action='version', version=WSPROXY_VERSION)
-
-    parser = argparse.ArgumentParser(
-        parents=[parent_parser],
-        description='Run and manage a websocket proxy.')
-
-    subparsers = parser.add_subparsers(
-        title='Available Commands', help='Additional Help', dest='cmd_name',
-        description='Commands to run and manage existing websocket proxies.')
-
-    run_parser = subparsers.add_parser(
-        'run', help='Run wsproxy server/client.', parents=[parent_parser])
-    run_parser.set_defaults(func=run_with_options)
-    run_parser.add_argument(
-        '--generate-default', action='store_true', dest='generate',
-        help='Generate a default configuration file and print to stdout.')
-
-    admin_parser = subparsers.add_parser(
-        'admin', help='Manage running wsproxy server.',
-        parents=[parent_parser])
-    admin_parser.set_defaults(func=run_admin_mode)
-    admin_parser.add_argument(
-        '-u', '--user', type=str, default=None, dest='username',
-        help='Username for login. (Default parsed from config file.)')
-    admin_parser.add_argument(
-        '-p', '--password', type=str, default=None, dest='password',
-        help='Password for login. (Default parsed from config file.)')
-    admin_parser.add_argument(
-        '--url', type=str, default=None, help='Connect using the given URL.')
-    admin_parser.add_argument(
-        '--no-ssl', action='store_true',
-        help=('Permit connecting without SSL. Careful, as this can send auth '
-              'without encryption.'))
-    admin_cmds = admin_parser.add_subparsers(
-        title='Administration Commands', dest='cmd')
-    admin_cmds.add_parser('list', help='List current connections.')
-    admin_cmds.add_parser(
-        'socks5', help='Setup a SOCKS5 proxy for the given client.')
-
-    args = parser.parse_args()
-    if not getattr(args, 'func', None):
-        parser.print_help()
-        sys.exit(1)
-        return
-
-    try:
-        with open(args.config, 'r') as stm:
-            options = yaml.safe_load(stm)
-    except Exception:
-        options = {}
-
-    # Add the command line overrides.
-    option_overrides = vars(args)
-    skip_option_set = set(['cmd_name', 'cmd'])
-
-    # Merge the CLI options with the parsed config.
-    for option, value in option_overrides.items():
-        # Skip these options which do not pertain to anything parsable.
-        if option in skip_option_set:
-            continue
-        # Skip these options as well (which implies they were not set).
-        if value is None:
-            continue
-        options[option] = value
-
-    debug = option_overrides.get('debug')
-    if debug is not None:
-        options['debug'] = debug
-
-    # Initialize the logger.
-    level = logging.DEBUG if options.get(debug, 0) > 0 else logging.INFO
-    handlers = []
-    handlers.append(logging.StreamHandler(sys.stderr))
-    # if args.log_file:
-    #     handlers.append(logging.FileHandler(args.log_file))
-    util.setup_default_logger(handlers, level)
-
-    # After overriding with the CLI options.
-    args.func(options)
-
-
 if __name__ == '__main__':
-    main()
+    main_cli()

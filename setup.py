@@ -13,11 +13,12 @@ setup(
         'psutil>=5.8.0',
         'pyjwt[crypto]>=2.1.0',
         'PyYAML>=5.4.1',
+        'click>=7.0.0'
     ],
     setup_requires=['flake8'],
     entry_points={
         'console_scripts': [
-            'wsproxyctl=wsproxy.service.main:main'
+            'wsproxyctl=wsproxy.service.main:main_cli'
         ]
     }
 )
