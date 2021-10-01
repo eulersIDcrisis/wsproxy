@@ -16,7 +16,7 @@ import yaml
 import click
 from tornado import web, httpserver, httpclient, netutil, ioloop
 from wsproxy import core, util, auth
-from wsproxy.parser.json import once, setup_subscription
+from wsproxy.protocol.json import once, setup_subscription
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
 from wsproxy.service.config import get_default_config_file_contents
@@ -122,65 +122,76 @@ class AdminContext(object):
         return core.WsClientConnection(context, request)
 
 
-@main_cli.group('admin', help="Run administrative commands for wsproxy.")
-@click.option('-v', '--verbose', count=True, help=(
-    "Enable verbose output. This option stacks for increasing verbosity."
-), default=None)
-@click.option('-c', '--config', type=click.Path(
-    exists=True, file_okay=True, readable=True))
-@click.option('--url', type=str, help="URL to connect to.")
-@click.option('-u', '--user', type=str, help=(
-    "Username for wsproxy. This overrides the same setting in the config "
-    "file."
-))
-@click.option('-P', '--password', type=str, help=(
-    "Password for wsproxy. This overrides the same setting in the config "
-    "file. To manually prompt for the password, use -W instead."
-))
-@click.option('-W', '--prompt-for-password', flag_value=True,
-              help="Prompt for the password.")
-@click.option('-k', '--insecure', flag_value=True, help=(
-    "Ignore any SSL certificate errors. "
-    "WARNING: This is insecure against MITM attacks!"))
-@click.option('-E', '--cert', help=(
-    "Use the given certificate when validating the connection. "
-    "This is especially useful when the wsproxy server is configured "
-    "to use its own custom self-signed certificate. This can help "
-    "prevent Man-In-The-Middle attacks."
-), type=click.Path(exists=True, file_okay=True, readable=True))
-@click.pass_context
-def admin_cli(ctx, url, config, user, password, insecure, cert, verbose,
-              prompt_for_password):
-    if config:
-        with open(config, 'rb') as stm:
-            options = yaml.safe_load(stm)
-        # Store the configuration with the context, after checking the other
-        # options. This should permit various different forms of auth later.
-    else:
-        options = dict()
+def create_admin_context_group(name, *args, **kwargs):
+    @click.group(name, *args, **kwargs)
+    @click.option('-v', '--verbose', count=True, help=(
+        "Enable verbose output. This option stacks for increasing verbosity."
+    ), default=None)
+    @click.option('-c', '--config', type=click.Path(
+        exists=True, file_okay=True, readable=True))
+    @click.option('--url', type=str, help="URL to connect to.")
+    @click.option('-u', '--user', type=str, help=(
+        "Username for wsproxy. This overrides the same setting in the config "
+        "file."
+    ))
+    @click.option('-P', '--password', type=str, help=(
+        "Password for wsproxy. This overrides the same setting in the config "
+        "file. To manually prompt for the password, use -W instead."
+    ))
+    @click.option('-W', '--prompt-for-password', flag_value=True,
+                  help="Prompt for the password.")
+    @click.option('-k', '--insecure', flag_value=True, help=(
+        "Ignore any SSL certificate errors. "
+        "WARNING: This is insecure against MITM attacks!"))
+    @click.option('-E', '--cert', help=(
+        "Use the given certificate when validating the connection. "
+        "This is especially useful when the wsproxy server is configured "
+        "to use its own custom self-signed certificate. This can help "
+        "prevent Man-In-The-Middle attacks."
+    ), type=click.Path(exists=True, file_okay=True, readable=True))
+    @click.pass_context
+    def _base_admin_cli(
+            ctx, url, config, user, password, insecure, cert, verbose,
+            prompt_for_password):
+        if config:
+            with open(config, 'rb') as stm:
+                options = yaml.safe_load(stm)
+            # Store the configuration with the context, after checking the other
+            # options. This should permit various different forms of auth later.
+        else:
+            options = dict()
 
-    if 'auth' not in options:
-        options['auth'] = dict()
-    if user:
-        options['auth']['username'] = user
-    if password:
-        options['auth']['password'] = password
-    # This implies to prompt for the password via stdin or the terminal.
-    if prompt_for_password:
-        password = click.prompt("Password: ", hide_input=True)
-        options['auth']['password'] = password
-    if verbose is not None:
-        options['debug'] = verbose
+        if 'auth' not in options:
+            options['auth'] = dict()
+        if user:
+            options['auth']['username'] = user
+        if password:
+            options['auth']['password'] = password
+        # This implies to prompt for the password via stdin or the terminal.
+        if prompt_for_password:
+            password = click.prompt("Password: ", hide_input=True)
+            options['auth']['password'] = password
+        if verbose is not None:
+            options['debug'] = verbose
 
-    if cert:
-        options['cert_path'] = cert
-    if insecure:
-        options['verify_host'] = False
+        if cert:
+            options['cert_path'] = cert
+        if insecure:
+            options['verify_host'] = False
 
-    if not url:
-        url = 'unix://unix_localhost/tmp/wsproxy.sock'
+        if not url:
+            url = 'unix://unix_localhost/tmp/wsproxy.sock'
 
-    ctx.obj = AdminContext(url, options)
+        ctx.obj = AdminContext(url, options)
+
+    # Return the closure.
+    return _base_admin_cli
+
+
+admin_cli = create_admin_context_group(
+    'admin', help="Run administrative commands for wsproxy."
+)
+main_cli.add_command(admin_cli)
 
 
 async def run_list_command(cxn):
@@ -198,19 +209,23 @@ pass_admin_context = click.pass_obj
 @admin_cli.command('list', help="List connections for the given wsproxy.")
 @pass_admin_context
 def list_command(admin_context):
-    cxn = admin_context.get_connection()
+    loop = None
     try:
+        cxn = admin_context.get_connection()
         loop = asyncio.new_event_loop()
         task = loop.create_task(run_list_command(cxn))
         loop.run_until_complete(task)
     except Exception:
         logger.exception("Error running command!")
     finally:
-        loop.close()
+        if loop:
+            loop.close()
 
 
-async def run_socks_proxy(cxn, port):
+async def run_socks_proxy(cxn, port, cxn_id=None):
     args = dict(port=port)
+    if cxn_id:
+        args['cxn_id'] = cxn_id
     await cxn.open()
     async with setup_subscription(
         cxn.state, 'socks5_proxy', args
@@ -223,12 +238,15 @@ async def run_socks_proxy(cxn, port):
     "Setup a Socks5 proxy to tunnel through the given wsproxy server. "
 ))
 @click.argument('socks_port', type=click.IntRange(0, 65535))
+@click.option('-x', '--to-cxn-id', type=click.STRING, help=(
+    "Proxy the traffic through the given connection."
+))
 @pass_admin_context
-def socks5_command(admin_context, socks_port):
+def socks5_command(admin_context, socks_port, to_cxn_id):
     cxn = admin_context.get_connection()
     try:
         loop = asyncio.new_event_loop()
-        task = loop.create_task(run_socks_proxy(cxn, socks_port))
+        task = loop.create_task(run_socks_proxy(cxn, socks_port, to_cxn_id))
         loop.run_until_complete(task)
     except Exception:
         logger.exception("Error running command!")
@@ -237,7 +255,7 @@ def socks5_command(admin_context, socks_port):
 
 
 def _create_admin_socket(context, path=None):
-    path = path or '/tmp/wsproxy.sock'
+    path = path or '/tmp/wsproxy.sock.{}'.format(os.getpid())
 
     routes = [
         (r'/ws', core.WsServerHandler, dict(context=context)),

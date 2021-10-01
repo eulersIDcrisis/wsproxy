@@ -2,7 +2,7 @@
 
 Miscellany for running certain operations with wsproxy.
 """
-from wsproxy.parser.json import setup_subscription
+from wsproxy.protocol.json import setup_subscription
 
 
 async def run_socks_proxy(port, state):

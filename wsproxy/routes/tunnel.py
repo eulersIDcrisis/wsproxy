@@ -9,10 +9,10 @@ from contextlib import AsyncExitStack, ExitStack
 from tornado import iostream, tcpclient
 from wsproxy import util
 from wsproxy.authentication.context import NotAuthorized
-from wsproxy.parser.json import (
+from wsproxy.protocol.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
 )
-from wsproxy.parser.proxy import RawProxyParser
+from wsproxy.protocol.proxy import RawProxyParser
 
 
 logger = util.get_child_logger('proxy')
@@ -25,7 +25,8 @@ class RawProxyStreamHandler(object):
     """Handler for proxying a socket request.
 
     This object manages different objects for proxying the contents of one
-    stream over to another endpoint using the module: wsproxy.parser.proxy
+    stream over to another endpoint using the module:
+        wsproxy.protocol.proxy
 
     Since this tunnels over a websocket (read as TCP) connection, some
     guarantees are implicit (i.e. message integrity, sequence, etc.).
@@ -112,9 +113,9 @@ class RawProxyStreamHandler(object):
 class ProxySocket(object):
     """Manage sending and receiving data from a proxied socket."""
 
-    def __init__(self, endpoint, local_stream, host, port,
+    def __init__(self, state, local_stream, host, port,
                  protocol='tcp', buffsize=DEFAULT_BUFFSIZE):
-        self.state = endpoint.state
+        self.state = state
         # Requested destination details.
         self.protocol = protocol
         self.host = host

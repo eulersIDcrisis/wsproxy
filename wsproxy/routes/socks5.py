@@ -12,7 +12,7 @@ from tornado import ioloop, tcpserver, tcpclient, iostream, gen
 from wsproxy import util
 from wsproxy.core import WsContext
 from wsproxy.routes import info, tunnel
-from wsproxy.parser.json import (
+from wsproxy.protocol.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
 )
 
@@ -154,18 +154,18 @@ class ProxySocks5Server(Socks5Server):
     This tunnels the data from the proxy server over a websocket.
     """
 
-    def __init__(self, port, endpoint):
-        """Create a SOCKS5 server that proxies across a websocket endpoint.
+    def __init__(self, port, state):
+        """Create a SOCKS5 server that proxies across a websocket state.
 
         Parameters
         ----------
         port: int
             The port to run the server on.
-        endpoint: WebsocketState
-            The websocket endpoint to send the proxied requests to.
+        state: WebsocketState
+            The websocket state to send the proxied requests to.
         """
         super(ProxySocks5Server, self).__init__(port)
-        self.endpoint = endpoint
+        self.state = state
         self.socket_id = uuid.uuid1()
         self.pending_cxns = {}
 
@@ -176,7 +176,7 @@ class ProxySocks5Server(Socks5Server):
                 exit_stack.callback(local_stream.close)
 
                 remote_socket = tunnel.ProxySocket(
-                    self.endpoint, local_stream, address, port)
+                    self.state, local_stream, address, port)
                 await remote_socket.open()
                 exit_stack.push_async_callback(remote_socket.close)
 

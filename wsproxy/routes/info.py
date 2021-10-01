@@ -5,7 +5,7 @@ Implements the routes for a simple echo (test).
 import asyncio
 import psutil
 from tornado import ioloop
-from wsproxy.parser.json import Route, RouteType
+from wsproxy.protocol.json import Route, RouteType
 
 
 async def echo(endpoint, args):

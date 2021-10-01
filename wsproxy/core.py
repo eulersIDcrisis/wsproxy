@@ -17,8 +17,8 @@ from tornado import tcpserver, tcpclient, websocket, ioloop, httpclient
 # from wsproxy.auth_manager import AuthManager
 from wsproxy.util import main_logger as logger
 from wsproxy.authentication.manager import AuthManager
-from wsproxy.parser.json import JsonParser
-from wsproxy.parser.proxy import RawProxyParser
+from wsproxy.protocol.json import JsonParser
+from wsproxy.protocol.proxy import RawProxyParser
 
 
 #

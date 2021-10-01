@@ -11,8 +11,8 @@ from tornado.httpclient import AsyncHTTPClient
 # Local imports
 from wsproxy.context import WsContext, WebsocketState
 from wsproxy.connection import WsServerHandler, WsClientConnection
-import wsproxy.parser.json as json_request
-import wsproxy.parser.proxy as proxy_request
+import wsproxy.protocol.json as json_request
+import wsproxy.protocol.proxy as proxy_request
 from wsproxy.routes import info as info_routes
 from wsproxy.routes import tunnel as tunnel_routes
 
