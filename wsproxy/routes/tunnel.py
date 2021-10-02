@@ -137,6 +137,8 @@ class ProxySocket(object):
         self._recv_count = 0
         self._buff_size = buffsize
 
+        self._close_context = None
+
     async def __aenter__(self):
         await self.open()
 
@@ -179,20 +181,11 @@ class ProxySocket(object):
 
             # Everything is setup correctly, so do not run the exit_stack
             # callbacks.
-            exit_stack.pop_all()
+            self._close_context = exit_stack.pop_all()
 
     async def close(self):
-        if self._monitor_sub:
-            await self._monitor_sub.close()
-            self._monitor_sub = None
-        if self._monitor_fut:
-            self._monitor_fut.cancel()
-            self._monitor_fut = None
-        if self._proxy_stream:
-            await self._proxy_stream.close()
-            self._proxy_stream = None
-
-        self.state.remove_proxy_socket(self.socket_id)
+        if self._close_context:
+            await self._close_context.aclose()
 
     async def run(self):
         total_count = 0

@@ -154,7 +154,7 @@ class ProxySocks5Server(Socks5Server):
     This tunnels the data from the proxy server over a websocket.
     """
 
-    def __init__(self, port, state):
+    def __init__(self, port, state, connect_callback=None):
         """Create a SOCKS5 server that proxies across a websocket state.
 
         Parameters
@@ -168,9 +168,18 @@ class ProxySocks5Server(Socks5Server):
         self.state = state
         self.socket_id = uuid.uuid1()
         self.pending_cxns = {}
+        # Only assign the connection callback if it is actually callable.
+        self._connect_callback = connect_callback if callable(connect_callback) else None
 
     async def handle_connection(self, local_stream, protocol, address, port):
         """Open a connection and proxy across this server's WS connection."""
+        try:
+            if self._connect_callback:
+                self._connect_callback(protocol, address, port)
+        except Exception as exc:
+            logger.warning("Error in connection callback: %s", exc)
+
+        # Run the connection here.
         try:
             async with AsyncExitStack() as exit_stack:
                 exit_stack.callback(local_stream.close)

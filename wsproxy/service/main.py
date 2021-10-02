@@ -61,10 +61,9 @@ main_cli = create_root_cli()
     "Run wsproxy server/client, using the given configuration file. "))
 @click.argument('config_file', type=click.Path(
     exists=True, file_okay=True, readable=True))
-@click.option('-v', '--verbose', count=True, help=(
+@click.option('-v', '--verbose', count=True, default=0, help=(
     "Enable verbose output. This option stacks for increasing verbosity."))
 def run_cli(config_file, verbose):
-    # Parse
     level = logging.DEBUG if verbose > 0 else logging.INFO
     handlers = []
     handlers.append(logging.StreamHandler(sys.stderr))
@@ -74,6 +73,10 @@ def run_cli(config_file, verbose):
 
     with open(config_file, 'r') as stm:
         options = yaml.safe_load(stm)
+
+    # Manually override the config file when -v is explicitly passed.
+    if verbose > 0:
+        options['debug'] = verbose
 
     run_with_options(options)
 
