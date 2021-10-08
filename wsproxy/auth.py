@@ -46,6 +46,8 @@ class AuthManager(metaclass=ABCMeta):
 
     async def run_initial_handlers(self, state):
         """Run any registered init handlers for this User/AuthManager."""
+        if not self._init_handlers:
+            return
         await asyncio.gather(*[
             handler(state) for handler in self._init_handlers
         ])

@@ -6,7 +6,7 @@ import uuid
 import weakref
 import asyncio
 from contextlib import AsyncExitStack, ExitStack
-from tornado import iostream, tcpclient
+from tornado import iostream, tcpclient, netutil
 from wsproxy import util
 from wsproxy.authentication.context import NotAuthorized
 from wsproxy.protocol.json import (
@@ -19,6 +19,24 @@ logger = util.get_child_logger('proxy')
 
 
 DEFAULT_BUFFSIZE = (2 ** 16)
+
+
+class AuthManagerResolver(netutil.Resolver):
+
+    def initialize(self, resolver, auth_manager):
+        self._resolver = resolver
+        self._auth_manager = auth_manager
+
+    async def resolve(self, host: str, port: int, family):
+        # Check the 'host' and 'port' parameter now.
+        self._auth_manager.check_proxy_request(host, port, 'tcp')
+
+        results = await self._resolver.resolve(host, port, family)
+        for result in results:
+            # Check that each of the outputs is permitted.
+            host_port = result[1]
+            self._auth_manager.check_proxy_request(host_port[0], host_port[1], '*')
+        return results
 
 
 class RawProxyStreamHandler(object):
@@ -263,7 +281,10 @@ async def proxy_socket_subscription(endpoint, args):
 
     # Connect to the socket with the parsed information.
     try:
-        client = tcpclient.TCPClient()
+        resolver = AuthManagerResolver(
+            netutil.DefaultExecutorResolver(),
+            endpoint.state.auth_manager)
+        client = tcpclient.TCPClient(resolver)
         local_stream = await client.connect(host, port)
         res = local_stream.socket.getsockname()
         bind_host = res[0]
