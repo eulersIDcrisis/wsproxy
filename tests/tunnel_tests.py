@@ -64,7 +64,7 @@ class WebsocketServerTest(testing.AsyncHTTPTestCase):
 
     @testing.gen_test
     async def test_proxy_route(self):
-        with contextlib.ExitStack() as exit_stack:
+        async with contextlib.AsyncExitStack() as exit_stack:
             # Setup a remote server.
             remote_sock, remote_port = testing.bind_unused_port()
             remote_server = EchoServer()
@@ -75,6 +75,9 @@ class WebsocketServerTest(testing.AsyncHTTPTestCase):
             # Make a request to proxy traffic from a local port to the remote
             # server.
             state = await self.ws_connect()
+
+            # The easiest usage for tunneling is to use the ProxySocket()
+            # object as a context.
 
             async with json_request.setup_subscription(
                 state, "proxy_socket", dict(

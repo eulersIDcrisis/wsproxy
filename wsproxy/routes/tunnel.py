@@ -35,34 +35,37 @@ class AuthManagerResolver(netutil.Resolver):
         for result in results:
             # Check that each of the outputs is permitted.
             host_port = result[1]
-            self._auth_manager.check_proxy_request(host_port[0], host_port[1], '*')
+            self._auth_manager.check_proxy_request(host_port[0], host_port[1])
         return results
 
 
-class RawProxyStreamHandler(object):
-    """Handler for proxying a socket request.
+class RawProxyContext(object):
 
-    This object manages different objects for proxying the contents of one
-    stream over to another endpoint using the module:
-        wsproxy.protocol.proxy
-
-    Since this tunnels over a websocket (read as TCP) connection, some
-    guarantees are implicit (i.e. message integrity, sequence, etc.).
-    However, "flow control" is NOT guaranteed by this protocol because the
-    sending/receiving endpoints might process the data at different rates,
-    causing data to buffer up at one of the endpoints.
-    """
-
-    def __init__(self, state, stream, socket_id, buffsize=DEFAULT_BUFFSIZE):
+    def __init__(self, state, socket_id, buffsize=DEFAULT_BUFFSIZE):
         self.socket_id = socket_id
         self._state = weakref.ref(state)
-        self._stream = stream
         self._bytes_read = 0
 
         self._cond = asyncio.Condition()
         self._buffer = bytearray(buffsize + 18)
         self._buffer[0] = RawProxyParser.opcode
         self._buffer[1:17] = self.socket_id.bytes
+
+    async def _read_into(self, buff):
+        """Parse any read data from the proxy into the given buffer or stream.
+
+        Subclasses should override this to actually read in the data to
+        the applicable buffer/stream.
+        """
+        raise NotImplementedError('Override _read_into() in a subclass!')
+
+    async def _write_out(self, msg):
+        """Write out the given data across the proxy.
+
+        Subclasses should override this to actually write out the data to
+        the applicable buffer/stream.
+        """
+        raise NotImplementedError('Override _write_out() in a subclass!')
 
     def get_websocket_state(self):
         return self._state()
@@ -102,7 +105,7 @@ class RawProxyStreamHandler(object):
         buff = memoryview(self._buffer)
         try:
             while True:
-                count = await self._stream.read_into(buff[18:], partial=True)
+                count = await self._read_into(buff[18:])
                 state = self.get_websocket_state()
                 await state.write_message(buff[:18 + count], binary=True)
                 total_count += count
@@ -116,7 +119,7 @@ class RawProxyStreamHandler(object):
     async def handle_receive(self, msg):
         try:
             async with self._cond:
-                await self._stream.write(msg)
+                await self._write_out(msg)
                 self._bytes_read += len(msg)
                 self._cond.notify_all()
         except iostream.StreamClosedError:
@@ -126,6 +129,109 @@ class RawProxyStreamHandler(object):
         async with self._cond:
             await self._cond.wait()
             return self._bytes_read
+
+
+class RawProxyStreamContext(RawProxyContext):
+    """Context for proxying a socket across a websocket connection.
+
+    This object manages different objects for proxying the contents of one
+    stream over to another endpoint using the module:
+        wsproxy.protocol.proxy
+
+    Since this tunnels over a websocket (read as TCP) connection, some
+    guarantees are implicit (i.e. message integrity, sequence, etc.).
+    However, "flow control" is NOT guaranteed by this protocol because the
+    sending/receiving endpoints might process the data at different rates,
+    causing data to buffer up at one of the endpoints.
+    """
+
+    def __init__(self, state, stream, socket_id, buffsize=DEFAULT_BUFFSIZE):
+        self._stream = stream
+        super(RawProxyStreamContext, self).__init__(
+            state, socket_id, buffsize=buffsize)
+
+    async def _write_out(self, msg):
+        await self._stream.write(msg)
+
+    async def _read_into(self, buff):
+        count = await self._stream.read_into(buff, partial=True)
+        return count
+
+# class RawProxyStreamContext(object):
+
+#     def __init__(self, state, stream, socket_id, buffsize=DEFAULT_BUFFSIZE):
+#         self.socket_id = socket_id
+#         self._state = weakref.ref(state)
+#         self._stream = stream
+#         self._bytes_read = 0
+
+#         self._cond = asyncio.Condition()
+#         self._buffer = bytearray(buffsize + 18)
+#         self._buffer[0] = RawProxyParser.opcode
+#         self._buffer[1:17] = self.socket_id.bytes
+
+#     def get_websocket_state(self):
+#         return self._state()
+
+#     async def __aenter__(self):
+#         await self.open()
+#         return self
+
+#     async def __aexit__(self, exc_type, exc_val, tb):
+#         await self.close()
+
+#     async def open(self):
+#         state = self.get_websocket_state()
+#         if state:
+#             state.add_proxy_socket(self.socket_id, self)
+
+#     async def close(self):
+#         state = self.get_websocket_state()
+#         if state:
+#             state.remove_proxy_socket(self.socket_id)
+#         async with self._cond:
+#             self._cond.notify_all()
+
+#     async def run_read_with_monitor_sub(self, monitor_sub):
+#         total_count = 0
+#         recv_count = 0
+#         cond = asyncio.Condition()
+
+#         async def _monitor_update():
+#             nonlocal recv_count
+#             async for msg in monitor_sub.result_generator():
+#                 async with cond:
+#                     recv_count = msg.get('count', recv_count)
+#                     cond.notify_all()
+
+#         monitor_fut = asyncio.create_task(_monitor_update())
+#         buff = memoryview(self._buffer)
+#         try:
+#             while True:
+#                 count = await self._stream.read_into(buff[18:], partial=True)
+#                 state = self.get_websocket_state()
+#                 await state.write_message(buff[:18 + count], binary=True)
+#                 total_count += count
+#                 async with cond:
+#                     if total_count > recv_count + len(self._buffer):
+#                         await cond.wait()
+#         finally:
+#             if not monitor_fut.done():
+#                 monitor_fut.cancel()
+
+#     async def handle_receive(self, msg):
+#         try:
+#             async with self._cond:
+#                 await self._stream.write(msg)
+#                 self._bytes_read += len(msg)
+#                 self._cond.notify_all()
+#         except iostream.StreamClosedError:
+#             pass
+
+#     async def byte_count_update(self):
+#         async with self._cond:
+#             await self._cond.wait()
+#             return self._bytes_read
 
 
 class ProxySocket(object):
@@ -169,7 +275,7 @@ class ProxySocket(object):
     async def open(self):
         """Open the remote socket and setup the applicable structures."""
         async with AsyncExitStack() as exit_stack:
-            self._proxy_stream = RawProxyStreamHandler(
+            self._proxy_stream = RawProxyStreamContext(
                 self.state, self._local_stream, self.socket_id,
                 buffsize=self._buff_size)
 
@@ -325,7 +431,7 @@ async def proxy_socket_subscription(endpoint, args):
                 await endpoint.error(dict(message="Unexpected error!"))
                 return
 
-            proxy_stream = RawProxyStreamHandler(
+            proxy_stream = RawProxyStreamContext(
                 state, local_stream, socket_id, buffsize=buffsize)
             await proxy_stream.open()
             exit_stack.push_async_callback(proxy_stream.close)

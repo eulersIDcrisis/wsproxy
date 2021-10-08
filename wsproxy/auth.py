@@ -37,7 +37,8 @@ class AuthManager(metaclass=ABCMeta):
             return True
         return bool(route in self._json_routes)
 
-    def check_proxy_request(self, host, port, protocol):
+    def check_proxy_request(self, host: str, port: int, socket_type=None,
+                            address_type=None):
         return True
 
     def add_init_handler(self, handler):
@@ -79,8 +80,9 @@ class NoAccessAuthManager(AuthManager):
         super(NoAccessAuthManager, self).__init__()
         self.subject = subject
 
-    def check_proxy_request(self, host, port, protocol):
-        raise NotAuthorized('Authentication failed!')
+    def check_proxy_request(self, host: str, port: int, socket_type=None,
+                            address_type=None):
+        raise NotAuthorized('No Access!')
 
     def authenticate(self, token):
         raise NotAuthorized('Authentication failed!')
