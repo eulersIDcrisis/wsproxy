@@ -51,21 +51,41 @@ class RawProxyContext(object):
         self._buffer[0] = RawProxyParser.opcode
         self._buffer[1:17] = self.socket_id.bytes
 
-    async def _read_into(self, buff):
+    async def _read_from_local(self, buff):
         """Parse any read data from the proxy into the given buffer or stream.
+
+        As the name implies, this is called to read data from across the proxy,
+        when the remote source writes data to be received locally.
 
         Subclasses should override this to actually read in the data to
         the applicable buffer/stream.
-        """
-        raise NotImplementedError('Override _read_into() in a subclass!')
 
-    async def _write_out(self, msg):
+        Parameters
+        ----------
+        buff: bytearray
+            The buffer to read data into.
+
+        Returns
+        -------
+        int:
+            Number of bytes that were read into the buffer.
+        """
+        raise NotImplementedError('Override _read_into_local() in a subclass!')
+
+    async def _write_to_local(self, data):
         """Write out the given data across the proxy.
+
+        As the name implies, this writes data locally to be recieved remotely.
 
         Subclasses should override this to actually write out the data to
         the applicable buffer/stream.
+
+        Parameters
+        ----------
+        data: bytes or bytearray
+            Data to write out across to the proxy.
         """
-        raise NotImplementedError('Override _write_out() in a subclass!')
+        raise NotImplementedError('Override _write_out_local() in a subclass!')
 
     def get_websocket_state(self):
         return self._state()
@@ -105,7 +125,7 @@ class RawProxyContext(object):
         buff = memoryview(self._buffer)
         try:
             while True:
-                count = await self._read_into(buff[18:])
+                count = await self._read_from_local(buff[18:])
                 state = self.get_websocket_state()
                 await state.write_message(buff[:18 + count], binary=True)
                 total_count += count
@@ -119,7 +139,7 @@ class RawProxyContext(object):
     async def handle_receive(self, msg):
         try:
             async with self._cond:
-                await self._write_out(msg)
+                await self._write_to_local(msg)
                 self._bytes_read += len(msg)
                 self._cond.notify_all()
         except iostream.StreamClosedError:
@@ -150,10 +170,10 @@ class RawProxyStreamContext(RawProxyContext):
         super(RawProxyStreamContext, self).__init__(
             state, socket_id, buffsize=buffsize)
 
-    async def _write_out(self, msg):
+    async def _write_to_local(self, msg):
         await self._stream.write(msg)
 
-    async def _read_into(self, buff):
+    async def _read_from_local(self, buff):
         count = await self._stream.read_into(buff, partial=True)
         return count
 
@@ -180,7 +200,6 @@ class ProxySocket(object):
         self._proxy_stream = None
 
         # Local variables
-        self._monitor_fut = None
         self._monitor_cond = asyncio.Condition()
         self._recv_count = 0
         self._buff_size = buffsize
@@ -225,7 +244,8 @@ class ProxySocket(object):
 
             # Now, schedule the monitor sub to update in the background with
             # the current value of the received bytes.
-            self._monitor_fut = asyncio.create_task(self._monitor_update())
+            monitor_fut = asyncio.create_task(self._monitor_update())
+            exit_stack.callback(monitor_fut.cancel)
 
             # Everything is setup correctly, so do not run the exit_stack
             # callbacks.
@@ -270,7 +290,6 @@ class ProxySocket(object):
 async def _write_monitor_updates(endpoint, proxy_stream):
     try:
         while endpoint.state.is_connected:
-        # while True:
             byte_count = await proxy_stream.byte_count_update()
             await endpoint.next(dict(count=byte_count))
     except (SubscriptionComplete, iostream.StreamClosedError):
@@ -298,14 +317,14 @@ async def proxy_socket_subscription(endpoint, args):
         # Check the proxy request against the current auth manager.
         endpoint.state.auth_manager.check_proxy_request(host, port, protocol)
     except KeyError as ke:
-        await endpoint.error(dict(message="Missing or Invalid field: {}".format(ke)))
+        await endpoint.error("Missing or Invalid field: {}".format(ke))
         return
     except NotAuthorized:
-        await endpoint.error(dict(message="Not Authorized."))
+        await endpoint.error("Not Authorized.")
         return
     except Exception:
         logger.exception("Error in proxy_socket subscription.")
-        await endpoint.error(dict(message="Internal Error"))
+        await endpoint.error("Internal Error")
         return
     state = endpoint.state
 

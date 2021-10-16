@@ -13,35 +13,10 @@ from wsproxy.core import (
 import wsproxy.protocol.json as json_protocol
 from wsproxy.routes import info as info_routes
 # Testing imports
-from tests import debug_util
+from tests import testing_utils
 
 
-class WebsocketServerTest(testing.AsyncHTTPTestCase):
-
-    def get_app(self):
-        manager = BasicPasswordAuthManager('user', 'random')
-        auth_context = AuthContext(manager, dict(user=manager))
-        route_mapping = {
-            route.name: route
-            for route in info_routes.get_routes()
-        }
-        self.context = WsContext(
-            auth_context, route_mapping, debug=debug_util.get_unittest_debug())
-        self.client_context = WsContext(
-            auth_context, route_mapping, debug=debug_util.get_unittest_debug())
-
-        return web.Application([
-            (r'/', WsServerHandler, dict(context=self.context)),
-            # (r'/client/details', InfoHandler, dict(context=self.context)),
-            # (r'/client/(?P<cxn_id>[^/]+)', ClientInfoHandler, dict(context=self.context))
-        ])
-
-    async def ws_connect(self, protocol='ws', path='/'):
-        url = "{}://127.0.0.1:{}{}".format(protocol, self.get_http_port(), path)
-
-        cxn = WsClientConnection(self.client_context, url)
-        state = await cxn.open()
-        return state
+class WebsocketServerTest(testing_utils.AsyncWsproxyTestCase):
 
     @testing.gen_test
     async def test_basic_once(self):
@@ -112,5 +87,5 @@ class WebsocketServerTest(testing.AsyncHTTPTestCase):
 
 
 if __name__ == '__main__':
-    # debug_util.enable_debug()
-    unittest.main()
+    verbosity = testing_utils.unittest_setup()
+    unittest.main(verbosity=verbosity)

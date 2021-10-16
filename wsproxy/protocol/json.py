@@ -118,11 +118,11 @@ class JsonParser(object):
     opcode = ord('{')
 
     def __init__(self, route_mapping):
-        self.__route_mapping = route_mapping
+        self._route_mapping = route_mapping
 
     @property
     def route_mapping(self):
-        return self.__route_mapping
+        return self._route_mapping
 
     async def process_message(self, state, message):
         error = None
@@ -138,10 +138,9 @@ class JsonParser(object):
         # drop the message.
         try:
             msg_id = res['id']
-        except KeyError as exc:
+        except KeyError:
             if state.debug > 0:
-                logger.debug("Drop message with missing field '%s': %s",
-                             exc, res)
+                logger.debug("Drop message with missing ID field: %s", res)
             return
         try:
             # If this is the response from some outgoing message, this should
@@ -172,7 +171,8 @@ class JsonParser(object):
             msg_type = RouteType(msg_type_str)
         except Exception:
             await state.write_message(dict(
-                status="error", message="Missing or invalid field: 'type'"
+                id=msg_id, status="error",
+                message="Missing or invalid field: 'type'"
             ))
             return
 
@@ -214,7 +214,14 @@ class JsonParser(object):
             # Will raise a not authorized exception if invalid.
             state.auth_manager.check_json_route(route)
 
-            handler = self.route_mapping[route]
+            handler = self.route_mapping.get(route)
+            if not handler:
+                await state.write_message(dict(
+                    id=msg_id, status='error',
+                    message="Route not found: {}".format(route)
+                ))
+                return
+
             endpoint = Endpoint(
                 state, msg_id,
                 complete_on_next=bool(msg_type != RouteType.SUB))
@@ -235,10 +242,9 @@ class JsonParser(object):
         except Exception as exc:
             logger.exception(u"%s", exc)
             error = "Bad Arguments!"
-        await state.write_message({
-            'status': 'error',
-            'message': error
-        })
+        await state.write_message(dict(
+            status='error', message=error, id=msg_id
+        ))
 
 
 class BaseRequest(object):
