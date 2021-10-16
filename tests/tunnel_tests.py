@@ -11,6 +11,7 @@ from tornado.httpclient import AsyncHTTPClient
 # Local imports
 from wsproxy.core import WsClientConnection
 from wsproxy.protocol import json as json_request
+from wsproxy.protocol import proxy
 from wsproxy.routes import tunnel
 
 # Test imports
@@ -80,6 +81,38 @@ class EchoServer(tcpserver.TCPServer):
             stream.close()
 
 
+class ProxyBufferTest(testing.AsyncTestCase):
+
+    @testing.gen_test
+    async def test_proxy_buffer(self):
+        # Create a buffer with 4 bytes for simple testing.
+        buffer = proxy.ProxyBuffer(5)
+        bytes_written = await buffer.enqueue(b'abcd')
+        self.assertEqual(4, bytes_written)
+        print(buffer.contents)
+        data = bytearray(2)
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(2, bytes_read)
+        self.assertEqual(b'ab', bytes(data))
+
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(2, bytes_read)
+        self.assertEqual(b'cd', bytes(data))
+
+        bytes_written = await buffer.enqueue(b'efg')
+        self.assertEqual(3, bytes_written)
+
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(2, bytes_read)
+        self.assertEqual(b'ef', data)
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(1, bytes_read)
+        self.assertEqual(b'g', data[0:1])
+
+
+        print("DEQUEUED: {}".format(data))
+
+@unittest.skip('Not ready')
 class WebsocketServerTest(testing_utils.AsyncWsproxyTestCase):
 
     @testing.gen_test
@@ -95,8 +128,6 @@ class WebsocketServerTest(testing_utils.AsyncWsproxyTestCase):
             # Make a request to proxy traffic from a local port to the remote
             # server.
             state = await self.ws_connect()
-
-            async with 
 
             socket_id = uuid.uuid1()
             async with json_request.setup_subscription(
