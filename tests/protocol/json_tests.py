@@ -1,4 +1,4 @@
-"""core_tests.py.
+"""json_tests.py.
 
 Test cases for the basic websocket state and connection routes.
 """
