@@ -11,10 +11,11 @@ from contextlib import AsyncExitStack
 from tornado import ioloop, tcpserver, tcpclient, iostream, gen
 from wsproxy import util
 from wsproxy.core import WsContext
-from wsproxy.routes import info, tunnel
+from wsproxy.routes import info
 from wsproxy.protocol.json import (
     Route, RouteType, setup_subscription, SubscriptionComplete
 )
+from wsproxy.protocol import proxy
 
 
 # Create the default logger for SOCKS 5.
@@ -184,7 +185,7 @@ class ProxySocks5Server(Socks5Server):
             async with AsyncExitStack() as exit_stack:
                 exit_stack.callback(local_stream.close)
 
-                remote_socket = tunnel.ProxySocket(
+                remote_socket = proxy.ProxySocket(
                     self.state, local_stream, address, port)
                 await remote_socket.open()
                 exit_stack.push_async_callback(remote_socket.close)

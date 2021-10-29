@@ -5,13 +5,11 @@ Module with some common testing utilities.
 import os
 import logging
 import unittest
-import tornado.web
-import tornado.testing
+from tornado import web, tcpserver, testing, iostream
 from wsproxy.auth import AuthContext, BasicPasswordAuthManager
 from wsproxy.core import WsContext, WsServerHandler, WsClientConnection
-from wsproxy.protocol.proxy import RawProxyParser
-from wsproxy.routes.info import get_routes as get_info_routes
-from wsproxy.routes.tunnel import get_routes as get_tunnel_routes
+from wsproxy.protocol.proxy import RawProxyParser, get_routes as get_proxy_routes
+from wsproxy.routes.registry import get_route_mapping
 
 
 GLOBAL_DEBUG = 0
@@ -56,23 +54,17 @@ def get_default_auth_manager():
     return BasicPasswordAuthManager('user', 'randomdatapassword')
 
 
-def get_default_routes():
-    routes = get_info_routes()
-    routes.extend(get_tunnel_routes())
-    return routes
+def get_default_route_mapping():
+    return get_route_mapping()
 
 
-def generate_wscontext(routes=_DEFAULT, auth_manager=_DEFAULT):
+def generate_wscontext(route_mapping=_DEFAULT, auth_manager=_DEFAULT):
     # Handle default authentication.
     if auth_manager is _DEFAULT:
         auth_manager = get_default_auth_manager()
     # Handle default routes.
-    if routes is _DEFAULT:
-        routes = get_default_routes()
-    route_mapping = {
-        route.name: route
-        for route in routes
-    }
+    if route_mapping is _DEFAULT:
+        route_mapping = get_default_route_mapping()
     auth_context = AuthContext(auth_manager, dict(user=auth_manager))
     return WsContext(
         auth_context, route_mapping, debug=get_unittest_debug(),
@@ -80,7 +72,7 @@ def generate_wscontext(routes=_DEFAULT, auth_manager=_DEFAULT):
     )
 
 
-class AsyncWsproxyTestCase(tornado.testing.AsyncHTTPTestCase):
+class AsyncWsproxyTestCase(testing.AsyncHTTPTestCase):
     """Base class for testing with Wsproxy.
 
     This contains various "helpers" that will instantiate a wsproxy server
@@ -105,7 +97,7 @@ class AsyncWsproxyTestCase(tornado.testing.AsyncHTTPTestCase):
         # This context is for the server.
         self.context = self.create_wscontext(client=False)
 
-        return tornado.web.Application([
+        return web.Application([
             (r'/ws', WsServerHandler, dict(context=self.context)),
             # (r'/client/details', InfoHandler, dict(context=self.context)),
             # (r'/client/(?P<cxn_id>[^/]+)', ClientInfoHandler, dict(context=self.context))
@@ -118,3 +110,20 @@ class AsyncWsproxyTestCase(tornado.testing.AsyncHTTPTestCase):
         state = await cxn.open()
         return state
 
+
+class EchoServer(tcpserver.TCPServer):
+    """Dummy Server for testing purposes.
+
+    It reads until it receives a newline, then echoes it back.
+    """
+    async def handle_stream(self, stream, address):
+        try:
+            data = await stream.read_until(b"\n")
+            await stream.write(data)
+        except iostream.StreamClosedError:
+            return
+        except Exception:
+            traceback.print_exc()
+            return
+        finally:
+            stream.close()

@@ -15,7 +15,7 @@ class SubscriptionError(Exception):
     """Exception denoting an error in the subscription."""
 
 
-class SubscriptionComplete(SubscriptionError):
+class SubscriptionComplete(Exception):
     """Exception denoting that a subscription is complete."""
 
 

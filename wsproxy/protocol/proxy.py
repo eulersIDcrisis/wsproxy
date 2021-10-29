@@ -246,6 +246,7 @@ class RawProxyContext(object):
         self.socket_id = socket_id
         self._state = weakref.ref(state)
         self._bytes_read = 0
+        self._stopped_event = asyncio.Event()
 
         self._cond = asyncio.Condition()
 
@@ -319,15 +320,15 @@ class RawProxyContext(object):
         async with self._cond:
             self._cond.notify_all()
 
-    async def _monitor_update(self, monitor_sub):
+    async def monitor_update(self, monitor_sub):
         async for msg in monitor_sub.result_generator():
             async with self._send_cond:
                 curr_acked = self._bytes_acked
                 self._bytes_acked = msg.get('count', curr_acked)
                 self._send_cond.notify_all()
 
-    async def run_read_with_monitor_sub(self, monitor_sub):
-        monitor_fut = asyncio.create_task(self._monitor_update(monitor_sub))
+    async def run(self, monitor_sub):
+        monitor_fut = asyncio.create_task(self.monitor_update(monitor_sub))
         buff = memoryview(self._buffer)
         try:
             # Since this is tunneling over a Websocket connection, we have most
@@ -348,8 +349,7 @@ class RawProxyContext(object):
                     if self._bytes_sent > self._bytes_acked + len(self._buffer):
                         await self._send_cond.wait()
         finally:
-            if not monitor_fut.done():
-                monitor_fut.cancel()
+            monitor_fut.cancel()
 
     async def handle_receive(self, msg):
         try:
@@ -485,7 +485,7 @@ class ProxySocket(object):
                 await self.state.write_message(buff[:18 + count], binary=True)
                 total_count += count
                 async with self._monitor_cond:
-                    if total_count > recv_count + 3 * self._buff_size:
+                    if total_count > recv_count + self._buff_size:
                         await self._monitor_cond.wait()
         except (iostream.StreamClosedError, SubscriptionComplete):
             pass
@@ -505,8 +505,8 @@ class ProxySocket(object):
 async def _write_monitor_updates(endpoint, proxy_stream):
     try:
         while endpoint.state.is_connected:
-            byte_count = await proxy_stream.byte_count_update()
-            await endpoint.next(dict(count=byte_count))
+            total_count, _ = await proxy_stream.byte_count_update()
+            await endpoint.next(dict(count=total_count))
     except (SubscriptionComplete, iostream.StreamClosedError):
         logger.info("Closing proxy socket monitor.")
 
@@ -604,7 +604,7 @@ async def proxy_socket_subscription(endpoint, args):
                 bind_host=bind_host, bind_port=bind_port, count=0))
 
             monitor_fut = asyncio.create_task(
-                proxy_stream.run_read_with_monitor_sub(monitor_sub))
+                proxy_stream.run(monitor_sub))
             write_fut = asyncio.create_task(_write_monitor_updates(endpoint, proxy_stream))
             exit_stack.callback(monitor_fut.cancel)
             exit_stack.callback(write_fut.cancel)
