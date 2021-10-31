@@ -16,7 +16,7 @@ from functools import partial
 from tornado import tcpserver, tcpclient, websocket, ioloop, httpclient
 # from wsproxy.auth_manager import AuthManager
 from wsproxy.util import main_logger as logger
-from wsproxy.authentication.manager import AuthManager
+from wsproxy.auth import AuthManager, NotAuthorized
 from wsproxy.protocol.json import JsonParser
 from wsproxy.protocol.proxy import RawProxyParser
 
@@ -103,11 +103,9 @@ class WsClientConnection(object):
         await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
-        try:
-            msg_dict = json.loads(msg)
-            auth = msg_dict.get('auth', '')
-        except Exception:
-            auth = ''
+
+        msg_dict = json.loads(msg)
+        auth = msg_dict.get('auth', '')
 
         auth_manager = self._auth_context.authenticate(auth)
 
@@ -139,9 +137,8 @@ class WsClientConnection(object):
         try:
             await self.open()
             await self._run_read_loop()
-        # except NotAuthorized:
-        #     logger.exception("Request was not authorized! Exiting...")
-        #     return
+        except NotAuthorized:
+            logger.error("Request was not authorized! Exiting...")
         except Exception as exc:
             logger.warning("Could not connect %s -- Reason: %s",
                            self.url, exc)
@@ -263,6 +260,9 @@ class WsServerHandler(websocket.WebSocketHandler):
         logger.info("Client CXN (ID: %s) received from: %s", self.cxn_id,
                     self._state.other_url)
         logger.info("Received at URL: %s", self.request.full_url())
+
+        # Run the init handlers, if appropriate.
+        asyncio.create_task(auth_manager.run_initial_handlers(self._state))
 
 
 #

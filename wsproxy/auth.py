@@ -5,6 +5,7 @@ Primary Authentication Module for wsproxy.
 This module defines the primary objects and functions for
 authentication with wsproxy.
 """
+import re
 from abc import ABCMeta, abstractmethod
 import datetime
 import asyncio
@@ -22,12 +23,30 @@ class AuthManager(metaclass=ABCMeta):
     """Manager that indicates what routes are permitted."""
 
     def __init__(self, json_routes=ALL, permit_localhost=False,
-                 permit_private_subnets=False):
+                 permit_private_subnets=False, allowed_hosts=ALL):
         self._json_routes = json_routes
         self._permit_localhost = permit_localhost
         self._permit_private_subnets = permit_private_subnets
 
-        # Handlers to invoke for this particular user. This is tracked here
+        if allowed_hosts is ALL:
+            allowed_hosts = ['.*:0']
+
+        # Format the allowed hosts.
+        self._allowed_hosts = []
+        for addr in allowed_hosts:
+            # Split 'addr' into the host and port. This split should either
+            # include one or two parts, but no more.
+            #
+            # TODO -- Make this work with IPv6 as well.
+            parts = addr.split(':', maxsplit=1)
+            if len(parts) == 2:
+                port = int(parts[1])
+                self._allowed_hosts.append((parts[0], port))
+            else:
+                # Permit any port, by passing a port number of '0'.
+                self._allowed_hosts.append(([parts[0]], 0))
+
+          # Handlers to invoke for this particular user. This is tracked here
         # since what to do likely depends on user. Each handler should be a
         # async function/coroutine that accepts a WebsocketState argument.
         self._init_handlers = []
@@ -39,7 +58,15 @@ class AuthManager(metaclass=ABCMeta):
 
     def check_proxy_request(self, host: str, port: int, socket_type=None,
                             address_type=None):
-        return True
+        for allowed_host, allowed_port in self._allowed_hosts:
+            if re.match(allowed_host, host):
+                # At this point, the host matches. Check if the port does too.
+                if allowed_port == port or (allowed_port == 0):
+                    return True
+
+        # Went through all valid addresses and none match.
+        return False
+
 
     def add_init_handler(self, handler):
         """Add a coroutine to invoke whenever this user logs in."""
@@ -146,11 +173,8 @@ class BasicPasswordAuthManager(AuthManager):
 
     DEFAULT_ALGORITHM = 'HS256'
 
-    def __init__(self, username, password, json_routes=ALL, permit_localhost=False,
-                 permit_private_subnets=False):
-        super(BasicPasswordAuthManager, self).__init__(
-            json_routes, permit_localhost, permit_private_subnets
-        )
+    def __init__(self, username, password, **kwargs):
+        super(BasicPasswordAuthManager, self).__init__(**kwargs)
         self.__username = username
         self.__password = password
 
