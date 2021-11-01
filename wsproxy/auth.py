@@ -67,7 +67,6 @@ class AuthManager(metaclass=ABCMeta):
         # Went through all valid addresses and none match.
         return False
 
-
     def add_init_handler(self, handler):
         """Add a coroutine to invoke whenever this user logs in."""
         self._init_handlers.append(handler)
@@ -124,19 +123,34 @@ class NoAccessAuthManager(AuthManager):
 class AuthContext(object):
     """Primary Context that stores the users authorized for wsproxy."""
 
-    def __init__(self, local_manager, auth_manager_mapping=None):
-        self._local_manager = local_manager
+    def __init__(self, auth_manager_mapping=None):
+        self._main_subject = None
         self._auth_manager_mapping = {
             user: manager
             for user, manager in (auth_manager_mapping or {}).items()
         }
 
     @property
-    def user(self):
-        return self._local_manager.get_subject()
+    def main_subject(self):
+        if self._main_subject:
+            return self._main_subject
+        return next(iter(self._auth_manager_mapping.keys()), None)
 
-    def generate_auth_jwt(self, token):
-        return self._local_manager.generate_auth_jwt(token)
+    def set_main_user(self, main_user):
+        if main_user not in self._auth_manager_mapping:
+            raise TypeError(
+                "Cannot set main_user to one that does not exist: {}".format(
+                    main_user))
+        self._main_subject = main_user
+
+    def generate_auth_jwt(self, subject):
+        if subject is None:
+            subject = self.main_subject
+        if subject not in self._auth_manager_mapping:
+            raise NotAuthorized(
+                "No AuthManager for subject found: {}".format(subject)
+            )
+        return self._auth_manager_mapping[subject].generate_auth_jwt('test')
 
     def authenticate(self, token):
         subject = ''
@@ -160,7 +174,7 @@ class AuthContext(object):
                 raise Exception("Failed Authentication!")
             return manager
         except Exception as e:
-            raise NotAuthorized() from e
+            raise NotAuthorized(str(e)) from e
 
     def add_auth_manager(self, manager):
         subject = manager.get_subject()

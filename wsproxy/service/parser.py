@@ -16,13 +16,27 @@ SOCKS5_INIT_REGEX = re.compile(r'socks5\:(?P<port>[0-9]+)')
 TUNNEL_INIT_REGEX = re.compile(r'tunnel\:(?P<port>[0-9]+)')
 
 
-def parse_auth_manager(options):
-    """Parse out the auth manager for a particular set of options."""
-    manager = None
-    auth_options = options.get('auth', dict())
-    if not auth_options:
-        return None
+def parse_user_config_section(options):
+    """Parse the user settings (authentication) portion of the config."""
+    auth_context = auth.AuthContext()
 
+    user_configs = options.get('user_config', [])
+
+    # Parse each config as an auth manager.
+    for config in user_configs:
+        set_main = config.get('set_as_main', False)
+        manager = parse_auth_manager(config)
+
+        # Add this AuthManager to the current context.
+        auth_context.add_auth_manager(manager)
+        if set_main:
+            auth_context.set_main_user(manager.subject)
+
+    return auth_context
+
+
+def parse_auth_manager(auth_options):
+    """Parse out the auth manager for a particular set of options."""
     auth_type = auth_options.get('type', 'basic').lower()
     allowed_hosts = auth_options.get('allowed_hosts', [])
     kwargs = dict(allowed_hosts=allowed_hosts)
@@ -93,6 +107,8 @@ def parse_server_options(context, server_options):
 
 def parse_client_options(context, client_options):
     url = client_options['url']
+    subject = client_options.get('username', None)
+
     logger.info('Client will connect to URL: %s', url)
     custom_ssl = client_options.get('ssl', {})
     if custom_ssl.get('enabled', False):
@@ -115,7 +131,7 @@ def parse_client_options(context, client_options):
         ssl_context = None
 
     request = httpclient.HTTPRequest(url, ssl_options=ssl_context)
-    return core.WsClientConnection(context, request)
+    return core.WsClientConnection(context, request, subject)
 
 
 def _create_admin_server(context, path=None):
@@ -142,11 +158,7 @@ def run_with_options(options):
     debug = options.get('debug', 0)
     # These are the main username/password fields for this user, not for
     # other users that could authenticate with this instance.
-    auth_manager = parse_auth_manager(options)
-    if not auth_manager:
-        raise Exception("No root user configured!")
-    auth_context = auth.AuthContext(auth_manager)
-    auth_context.add_auth_manager(auth_manager)
+    auth_context = parse_user_config_section(options)
 
     # Setup the routes.
     route_mapping = route_registry.get_route_mapping()

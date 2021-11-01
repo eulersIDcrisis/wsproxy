@@ -227,7 +227,9 @@ async def socks5_proxy_subscription(endpoint, args):
         await endpoint.error("Invalid arguments!")
         return
     try:
-        server = ProxySocks5Server(port, socks_endpoint)
+        # Get the WebsocketState.
+        state = socks_endpoint.state
+        server = ProxySocks5Server(port, state)
         server.setup()
         await endpoint.next(dict(port=port))
 

@@ -3,6 +3,10 @@
 Miscellany for running certain operations with wsproxy.
 """
 from wsproxy.protocol.json import setup_subscription
+from wsproxy.util import get_child_logger
+
+
+logger = get_child_logger('misc')
 
 
 async def run_socks_proxy(port, state):
