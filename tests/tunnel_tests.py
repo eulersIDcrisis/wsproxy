@@ -9,20 +9,62 @@ import contextlib
 from tornado import ioloop, web, websocket, tcpserver, iostream, testing
 from tornado.httpclient import AsyncHTTPClient
 # Local imports
-from wsproxy.context import WsContext, WebsocketState
-from wsproxy.connection import WsServerHandler, WsClientConnection
-import wsproxy.protocol.json as json_request
-import wsproxy.protocol.proxy as proxy_request
-from wsproxy.routes import info as info_routes
-from wsproxy.routes import tunnel as tunnel_routes
+from wsproxy.core import WsClientConnection
+from wsproxy.protocol import json as json_request
+from wsproxy.protocol import proxy
+from wsproxy.routes import tunnel
 
 # Test imports
-from tests import debug_util
+from tests import testing_utils
 
 
-def prepare_curl_socks5(curl):
-    import pycurl
-    curl.setopt(pycurl.PROXYTYPE, pycurl.PROXYTYPE_SOCKS5)
+# def prepare_curl_socks5(curl):
+#     import pycurl
+#     curl.setopt(pycurl.PROXYTYPE, pycurl.PROXYTYPE_SOCKS5)
+
+
+class BufferedRawProxyContext(tunnel.RawProxyContext):
+
+    def __init__(self):
+        super().__init__()
+        self._cond = asyncio.Condition()
+        self._received_data = bytearray()
+        self._sent_data = bytearray()
+        self._stop_event = asyncio.Event()
+
+    async def _write_to_local(self, data):
+        # This is confusing, but basically this is called when data is received
+        # from the remote source and should be written out to the local socket.
+        async with self._cond:
+            self._received_data.append(data)
+            # Notify that some data was received.
+            self._cond.notify_all()
+
+    async def _read_from_local(self, buff):
+        # This is data that should be written out to the remote proxy.
+        max_count = len(buff)
+        async with self._cond:
+            while not self._stop_event.is_set():
+                if len(self._send_queue_data) <= 0:
+                    self._cond.wait()
+                    continue
+            self._send_queue_data
+
+    async def reset(self):
+        async with self._cond:
+            self._received_data = bytearray()
+            self._send_queue_data = bytearray()
+            self._cond.notify_all()
+
+    async def write_data(self, data, wait_for_send=True):
+        async with self._cond:
+            self._send_queue_data.append(data)
+            if not wait_for_send:
+                return
+            while not self._stop_event.is_set():
+                if len(self._send_queue_data) <= 0:
+                    return
+                self._cond.wait()
 
 
 class EchoServer(tcpserver.TCPServer):
@@ -39,32 +81,78 @@ class EchoServer(tcpserver.TCPServer):
             stream.close()
 
 
-class WebsocketServerTest(testing.AsyncHTTPTestCase):
-
-    def get_app(self):
-        routes = tunnel_routes.get_routes()
-        self.context = WsContext(routes, other_parsers=[
-            proxy_request.RawProxyParser()
-        ], debug=debug_util.get_unittest_debug())
-
-        self.client_context = WsContext(routes, other_parsers=[
-            proxy_request.RawProxyParser()
-        ], debug=debug_util.get_unittest_debug())
-
-        return web.Application([
-            (r'/', WsServerHandler, dict(context=self.context)),
-        ])
-
-    async def ws_connect(self, protocol='ws', path='/'):
-        url = "{}://127.0.0.1:{}{}".format(
-            protocol, self.get_http_port(), path)
-        cxn = WsClientConnection(self.client_context, url)
-        state = await cxn.open()
-        return state
+class ProxyBufferTest(testing.AsyncTestCase):
 
     @testing.gen_test
-    async def test_proxy_route(self):
-        with contextlib.ExitStack() as exit_stack:
+    async def test_proxy_buffer(self):
+        # Create a buffer with 4 bytes for simple testing.
+        buffer = proxy.ProxyBuffer(5)
+        bytes_written = await buffer.enqueue(b'abcd')
+        self.assertEqual(4, bytes_written)
+        total = await buffer.get_total_bytes_enqueued()
+        self.assertEqual(4, total)
+        total = await buffer.get_total_bytes_dequeued()
+        self.assertEqual(0, total)
+        size = await buffer.get_current_count()
+        self.assertEqual(4, size)
+
+        data = bytearray(2)
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(2, bytes_read)
+        self.assertEqual(b'ab', bytes(data))
+        total = await buffer.get_total_bytes_enqueued()
+        self.assertEqual(4, total)
+        total = await buffer.get_total_bytes_dequeued()
+        self.assertEqual(2, total)
+        size = await buffer.get_current_count()
+        self.assertEqual(2, size)
+
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(2, bytes_read)
+        self.assertEqual(b'cd', bytes(data))
+        total = await buffer.get_total_bytes_enqueued()
+        self.assertEqual(4, total)
+        total = await buffer.get_total_bytes_dequeued()
+        self.assertEqual(4, total)
+        size = await buffer.get_current_count()
+        self.assertEqual(0, size)
+
+        bytes_written = await buffer.enqueue(b'efg')
+        self.assertEqual(3, bytes_written)
+        total = await buffer.get_total_bytes_enqueued()
+        self.assertEqual(7, total)
+        total = await buffer.get_total_bytes_dequeued()
+        self.assertEqual(4, total)
+        size = await buffer.get_current_count()
+        self.assertEqual(3, size)
+
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(2, bytes_read)
+        self.assertEqual(b'ef', data)
+        total = await buffer.get_total_bytes_enqueued()
+        self.assertEqual(7, total)
+        total = await buffer.get_total_bytes_dequeued()
+        self.assertEqual(6, total)
+        size = await buffer.get_current_count()
+        self.assertEqual(1, size)
+
+        bytes_read = await buffer.dequeue(data)
+        self.assertEqual(1, bytes_read)
+        self.assertEqual(b'g', data[0:1])
+        total = await buffer.get_total_bytes_enqueued()
+        self.assertEqual(7, total)
+        total = await buffer.get_total_bytes_dequeued()
+        self.assertEqual(7, total)
+        size = await buffer.get_current_count()
+        self.assertEqual(0, size)
+
+
+@unittest.skip('Not ready')
+class WebsocketServerTest(testing_utils.AsyncWsproxyTestCase):
+
+    @testing.gen_test
+    async def test_proxy_socket(self):
+        async with contextlib.AsyncExitStack() as exit_stack:
             # Setup a remote server.
             remote_sock, remote_port = testing.bind_unused_port()
             remote_server = EchoServer()
@@ -76,9 +164,11 @@ class WebsocketServerTest(testing.AsyncHTTPTestCase):
             # server.
             state = await self.ws_connect()
 
+            socket_id = uuid.uuid1()
             async with json_request.setup_subscription(
                 state, "proxy_socket", dict(
-                    host="localhost", port=remote_port, protocol="tcp")
+                    host="localhost", port=remote_port, protocol="tcp",
+                    socket_id=socket_id.hex, buffsize=1)
             ) as sub:
                 self.assertIn(sub.msg_id, state.msg_mapping)
                 msg = await sub.next()
@@ -105,5 +195,5 @@ class WebsocketServerTest(testing.AsyncHTTPTestCase):
 
 
 if __name__ == '__main__':
-    debug_util.enable_debug()
-    unittest.main()
+    verbosity = testing_utils.unittest_setup()
+    unittest.main(verbosity=verbosity)

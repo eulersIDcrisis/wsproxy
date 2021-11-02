@@ -16,7 +16,7 @@ from functools import partial
 from tornado import tcpserver, tcpclient, websocket, ioloop, httpclient
 # from wsproxy.auth_manager import AuthManager
 from wsproxy.util import main_logger as logger
-from wsproxy.authentication.manager import AuthManager
+from wsproxy.auth import AuthManager, NotAuthorized
 from wsproxy.protocol.json import JsonParser
 from wsproxy.protocol.proxy import RawProxyParser
 
@@ -37,7 +37,7 @@ class WsClientConnection(object):
     available. The process is TBD.
     """
 
-    def __init__(self, context, url_or_request, override_auth_context=None):
+    def __init__(self, context, url_or_request, subject=None):
         """Create a WsClientConnection object.
 
         This object is responsible for managing the state of a connection to
@@ -51,10 +51,11 @@ class WsClientConnection(object):
         url_or_request: str or tornado.httpclient.HTTPRequest
             The request information to use. If only a string is passed, then
             the string is assumed to be the URL.
-        auth_context: AuthContext (optional)
-            The AuthContext to handle a given connection.
+        subject: str
+            The subject to use when authenticating with the server.
         """
         self.cxn_id = generate_connection_id()
+        self._subject = subject
 
         if isinstance(url_or_request, str):
             self.url = url_or_request
@@ -69,6 +70,8 @@ class WsClientConnection(object):
         self.context = context
 
         self._auth_context = self.context.auth_context
+
+        # TODO: Assert that the subject actually exists in this AuthContext.
 
         # Connection starts out as closed, so set the event.
         self._connection_closed = asyncio.Event()
@@ -99,15 +102,13 @@ class WsClientConnection(object):
             ping_interval=12, ping_timeout=60)
 
         # Parse the auth context using the given string (usually a JWT).
-        auth_token = self.context.auth_context.generate_auth_jwt('text')
+        auth_token = self.context.auth_context.generate_auth_jwt(self._subject)
         await self._cxn.write_message(json.dumps(dict(auth=auth_token)))
         # Read the first message from the connection to get the auth info.
         msg = await self._cxn.read_message()
-        try:
-            msg_dict = json.loads(msg)
-            auth = msg_dict.get('auth', '')
-        except Exception:
-            auth = ''
+
+        msg_dict = json.loads(msg)
+        auth = msg_dict.get('auth', '')
 
         auth_manager = self._auth_context.authenticate(auth)
 
@@ -139,9 +140,8 @@ class WsClientConnection(object):
         try:
             await self.open()
             await self._run_read_loop()
-        # except NotAuthorized:
-        #     logger.exception("Request was not authorized! Exiting...")
-        #     return
+        except NotAuthorized as e:
+            logger.error("Request was not authorized: %s", str(e))
         except Exception as exc:
             logger.warning("Could not connect %s -- Reason: %s",
                            self.url, exc)
@@ -233,15 +233,15 @@ class WsServerHandler(websocket.WebSocketHandler):
         auth_info = json.loads(message)
         auth = auth_info.get('auth', '')
 
+        # Check the authentication of this request.
+        auth_manager = self.context.auth_context.authenticate(auth)
+
         try:
-            token = self.context.auth_context.generate_auth_jwt('test')
+            token = self.context.auth_context.generate_auth_jwt(None)
             await self.write_message(dict(auth=token))
         except Exception:
             logger.exception("Error trying to open connection! Closing...")
             self.close()
-
-        # Check the authentication of this request.
-        auth_manager = self.context.auth_context.authenticate(auth)
 
         # At this point, the authentication context should be set. Continue
         # with the rest of the handshake and start handling requests.
@@ -263,6 +263,9 @@ class WsServerHandler(websocket.WebSocketHandler):
         logger.info("Client CXN (ID: %s) received from: %s", self.cxn_id,
                     self._state.other_url)
         logger.info("Received at URL: %s", self.request.full_url())
+
+        # Run the init handlers, if appropriate.
+        asyncio.create_task(auth_manager.run_initial_handlers(self._state))
 
 
 #

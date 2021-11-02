@@ -94,11 +94,11 @@ async def garbage_collect_post(endpoint, args):
 def get_routes():
     """Return the routes for this module."""
     return [
+        Route(RouteType.POST, "garbage_collect", garbage_collect_post,
+              'system-inspect'),
         Route(RouteType.ONCE, "echo", echo, 'test'),
         Route(RouteType.SUB, "count", count_subscription, 'test'),
         Route(RouteType.SUB, "info", info_subscription, 'system-inspect'),
-        Route(RouteType.SUB, "garbage_collect", garbage_collect_post,
-              'system-inspect'),
         Route(RouteType.SUB, "connection_info", connection_info_subscription,
               'system-inspect'),
     ]

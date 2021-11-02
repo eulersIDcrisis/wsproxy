@@ -5,6 +5,7 @@ Primary Authentication Module for wsproxy.
 This module defines the primary objects and functions for
 authentication with wsproxy.
 """
+import re
 from abc import ABCMeta, abstractmethod
 import datetime
 import asyncio
@@ -22,12 +23,30 @@ class AuthManager(metaclass=ABCMeta):
     """Manager that indicates what routes are permitted."""
 
     def __init__(self, json_routes=ALL, permit_localhost=False,
-                 permit_private_subnets=False):
+                 permit_private_subnets=False, allowed_hosts=ALL):
         self._json_routes = json_routes
         self._permit_localhost = permit_localhost
         self._permit_private_subnets = permit_private_subnets
 
-        # Handlers to invoke for this particular user. This is tracked here
+        if allowed_hosts is ALL:
+            allowed_hosts = ['.*:0']
+
+        # Format the allowed hosts.
+        self._allowed_hosts = []
+        for addr in allowed_hosts:
+            # Split 'addr' into the host and port. This split should either
+            # include one or two parts, but no more.
+            #
+            # TODO -- Make this work with IPv6 as well.
+            parts = addr.split(':', maxsplit=1)
+            if len(parts) == 2:
+                port = int(parts[1])
+                self._allowed_hosts.append((parts[0], port))
+            else:
+                # Permit any port, by passing a port number of '0'.
+                self._allowed_hosts.append(([parts[0]], 0))
+
+          # Handlers to invoke for this particular user. This is tracked here
         # since what to do likely depends on user. Each handler should be a
         # async function/coroutine that accepts a WebsocketState argument.
         self._init_handlers = []
@@ -37,8 +56,16 @@ class AuthManager(metaclass=ABCMeta):
             return True
         return bool(route in self._json_routes)
 
-    def check_proxy_request(self, host, port, protocol):
-        return True
+    def check_proxy_request(self, host: str, port: int, socket_type=None,
+                            address_type=None):
+        for allowed_host, allowed_port in self._allowed_hosts:
+            if re.match(allowed_host, host):
+                # At this point, the host matches. Check if the port does too.
+                if allowed_port == port or (allowed_port == 0):
+                    return True
+
+        # Went through all valid addresses and none match.
+        return False
 
     def add_init_handler(self, handler):
         """Add a coroutine to invoke whenever this user logs in."""
@@ -46,6 +73,8 @@ class AuthManager(metaclass=ABCMeta):
 
     async def run_initial_handlers(self, state):
         """Run any registered init handlers for this User/AuthManager."""
+        if not self._init_handlers:
+            return
         await asyncio.gather(*[
             handler(state) for handler in self._init_handlers
         ])
@@ -77,8 +106,9 @@ class NoAccessAuthManager(AuthManager):
         super(NoAccessAuthManager, self).__init__()
         self.subject = subject
 
-    def check_proxy_request(self, host, port, protocol):
-        raise NotAuthorized('Authentication failed!')
+    def check_proxy_request(self, host: str, port: int, socket_type=None,
+                            address_type=None):
+        raise NotAuthorized('No Access!')
 
     def authenticate(self, token):
         raise NotAuthorized('Authentication failed!')
@@ -93,19 +123,34 @@ class NoAccessAuthManager(AuthManager):
 class AuthContext(object):
     """Primary Context that stores the users authorized for wsproxy."""
 
-    def __init__(self, local_manager, auth_manager_mapping=None):
-        self._local_manager = local_manager
+    def __init__(self, auth_manager_mapping=None):
+        self._main_subject = None
         self._auth_manager_mapping = {
             user: manager
             for user, manager in (auth_manager_mapping or {}).items()
         }
 
     @property
-    def user(self):
-        return self._local_manager.get_subject()
+    def main_subject(self):
+        if self._main_subject:
+            return self._main_subject
+        return next(iter(self._auth_manager_mapping.keys()), None)
 
-    def generate_auth_jwt(self, token):
-        return self._local_manager.generate_auth_jwt(token)
+    def set_main_user(self, main_user):
+        if main_user not in self._auth_manager_mapping:
+            raise TypeError(
+                "Cannot set main_user to one that does not exist: {}".format(
+                    main_user))
+        self._main_subject = main_user
+
+    def generate_auth_jwt(self, subject):
+        if subject is None:
+            subject = self.main_subject
+        if subject not in self._auth_manager_mapping:
+            raise NotAuthorized(
+                "No AuthManager for subject found: {}".format(subject)
+            )
+        return self._auth_manager_mapping[subject].generate_auth_jwt(subject)
 
     def authenticate(self, token):
         subject = ''
@@ -129,7 +174,7 @@ class AuthContext(object):
                 raise Exception("Failed Authentication!")
             return manager
         except Exception as e:
-            raise NotAuthorized() from e
+            raise NotAuthorized(str(e)) from e
 
     def add_auth_manager(self, manager):
         subject = manager.get_subject()
@@ -142,11 +187,8 @@ class BasicPasswordAuthManager(AuthManager):
 
     DEFAULT_ALGORITHM = 'HS256'
 
-    def __init__(self, username, password, json_routes=ALL, permit_localhost=False,
-                 permit_private_subnets=False):
-        super(BasicPasswordAuthManager, self).__init__(
-            json_routes, permit_localhost, permit_private_subnets
-        )
+    def __init__(self, username, password, **kwargs):
+        super(BasicPasswordAuthManager, self).__init__(**kwargs)
         self.__username = username
         self.__password = password
 
