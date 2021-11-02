@@ -150,7 +150,7 @@ class AuthContext(object):
             raise NotAuthorized(
                 "No AuthManager for subject found: {}".format(subject)
             )
-        return self._auth_manager_mapping[subject].generate_auth_jwt('test')
+        return self._auth_manager_mapping[subject].generate_auth_jwt(subject)
 
     def authenticate(self, token):
         subject = ''

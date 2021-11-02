@@ -20,7 +20,9 @@ from wsproxy.protocol.json import once, setup_subscription
 from wsproxy.routes import registry as route_registry
 from wsproxy.authentication.manager import BasicPasswordAuthFactory
 from wsproxy.service.config import get_default_config_file_contents
-from wsproxy.service.parser import run_with_options, parse_auth_manager
+from wsproxy.service.parser import (
+    run_with_options, parse_auth_manager, parse_user_config_section
+)
 
 
 class UnixResolver(netutil.Resolver):
@@ -103,8 +105,8 @@ class AdminContext(object):
             url = urlunsplit(('ws', 'unix_localhost', '/ws', '', ''))
 
         routes = route_registry.get_route_mapping()
-        auth_context = auth.AuthContext(auth_manager)
-        auth_context.add_auth_manager(auth_manager)
+
+        auth_context = parse_user_config_section(self.config_options)
         context = core.WsContext(auth_context, routes)
 
         cert_path = self.config_options.get('cert_path')

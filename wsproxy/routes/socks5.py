@@ -217,19 +217,19 @@ async def socks5_proxy_subscription(endpoint, args):
         # there might be multiple different connection IDs to connect to.
         if cxn_id:
             context = endpoint.state.context
-            socks_endpoint = context.connection_mapping.get(cxn_id)
-            if not socks_endpoint:
+            socks_state = context.connection_mapping.get(cxn_id)
+            if not socks_state:
                 await endpoint.error("Invalid connection ID.")
                 return
         else:
-            socks_endpoint = endpoint
+            socks_state = endpoint.state
     except Exception:
         await endpoint.error("Invalid arguments!")
         return
+    server = None
     try:
         # Get the WebsocketState.
-        state = socks_endpoint.state
-        server = ProxySocks5Server(port, state)
+        server = ProxySocks5Server(port, socks_state)
         server.setup()
         await endpoint.next(dict(port=port))
 
@@ -241,8 +241,9 @@ async def socks5_proxy_subscription(endpoint, args):
         logger.exception('Exception hosting SOCKS5 proxy subscription.')
         await endpoint.error('Error in socks5 proxy!')
     finally:
-        server.close()
-        server.teardown()
+        if server:
+            server.close()
+            server.teardown()
 
 
 def get_routes():
